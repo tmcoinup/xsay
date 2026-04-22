@@ -1,10 +1,12 @@
 mod audio;
 mod config;
+mod download;
 mod error;
 mod hotkey;
 mod inject;
 mod model;
 mod overlay;
+mod settings_ui;
 mod state;
 mod transcribe;
 
@@ -13,8 +15,12 @@ use config::Config;
 use crossbeam_channel::select;
 use hotkey::AppEvent;
 use inject::InjectCmd;
+use parking_lot::Mutex;
 use state::{AppState, SharedState, new_shared_state};
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicBool},
+    Arc,
+};
 use std::time::Instant;
 use transcribe::{TranscribeReq, TranscriptSeg};
 
@@ -63,6 +69,11 @@ fn main() -> anyhow::Result<()> {
 
     let shared_state = new_shared_state();
 
+    // Shared hotkey config: hotkey thread + settings UI both read/write this
+    let shared_hotkey = Arc::new(Mutex::new(cfg.hotkey.clone()));
+    // When settings captures a key, this flag suppresses global hotkey events
+    let capture_active = Arc::new(AtomicBool::new(false));
+
     // Create all channels
     let (hotkey_tx, hotkey_rx) = crossbeam_channel::unbounded::<AppEvent>();
     let (audio_cmd_tx, audio_cmd_rx) = crossbeam_channel::unbounded::<AudioCmd>();
@@ -74,8 +85,9 @@ fn main() -> anyhow::Result<()> {
 
     // Spawn worker threads
     {
-        let hk_cfg = cfg.hotkey.clone();
-        std::thread::spawn(move || hotkey::run_hotkey_thread(hotkey_tx, hk_cfg));
+        let hk_shared = Arc::clone(&shared_hotkey);
+        let cap = Arc::clone(&capture_active);
+        std::thread::spawn(move || hotkey::run_hotkey_thread(hotkey_tx, hk_shared, cap));
     }
 
     {
@@ -124,7 +136,13 @@ fn main() -> anyhow::Result<()> {
     eframe::run_native(
         "xsay",
         native_options,
-        Box::new(move |_cc| Ok(Box::new(overlay::XsayOverlay::new(shared_state)))),
+        Box::new(move |_cc| {
+            Ok(Box::new(overlay::XsayOverlay::new(
+                shared_state,
+                shared_hotkey,
+                capture_active,
+            )))
+        }),
     )
     .map_err(|e| anyhow::anyhow!("eframe error: {:?}", e))?;
 

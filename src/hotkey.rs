@@ -1,9 +1,12 @@
 use crate::config::HotkeyConfig;
 use crossbeam_channel::Sender;
-use rdev::{EventType, Key, listen};
+use parking_lot::Mutex;
+use rdev::{listen, EventType, Key};
 use std::collections::HashSet;
-use std::sync::{Arc, Mutex};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 
 #[derive(Debug, Clone)]
 pub enum AppEvent {
@@ -12,29 +15,42 @@ pub enum AppEvent {
     EscapePressed,
 }
 
-pub fn run_hotkey_thread(event_tx: Sender<AppEvent>, config: HotkeyConfig) {
-    let target_key = parse_key(&config.key);
-    let required_mods: Vec<Key> = config
-        .modifiers
-        .iter()
-        .filter_map(|m| parse_modifier(m))
-        .collect();
-
+/// `shared_config` is read on every key event so hotkey changes take effect immediately.
+/// `capture_active` is set by the settings UI when capturing a new hotkey; while true,
+/// the hotkey fires are suppressed so rdev doesn't interfere with the egui key capture.
+pub fn run_hotkey_thread(
+    event_tx: Sender<AppEvent>,
+    shared_config: Arc<Mutex<HotkeyConfig>>,
+    capture_active: Arc<AtomicBool>,
+) {
     let held_keys: Arc<Mutex<HashSet<Key>>> = Arc::new(Mutex::new(HashSet::new()));
     let hotkey_active = Arc::new(AtomicBool::new(false));
 
     let held_clone = Arc::clone(&held_keys);
     let active_clone = Arc::clone(&hotkey_active);
     let tx = event_tx;
+    let cfg = shared_config;
+    let capturing = capture_active;
 
     if let Err(e) = listen(move |event| {
         match event.event_type {
             EventType::KeyPress(key) => {
-                let mut held = held_clone.lock().unwrap();
+                let mut held = held_clone.lock();
                 held.insert(key.clone());
 
-                let mods_ok = required_mods.iter().all(|m| held.contains(m));
-                if key == target_key && mods_ok && !active_clone.load(Ordering::SeqCst) {
+                // While settings is capturing a hotkey, suppress normal hotkey events
+                if capturing.load(Ordering::SeqCst) {
+                    return;
+                }
+
+                let config = cfg.lock();
+                let target = parse_key(&config.key);
+                let mods_ok = config
+                    .modifiers
+                    .iter()
+                    .all(|m| parse_modifier(m).map(|k| held.contains(&k)).unwrap_or(true));
+
+                if key == target && mods_ok && !active_clone.load(Ordering::SeqCst) {
                     active_clone.store(true, Ordering::SeqCst);
                     let _ = tx.send(AppEvent::HotkeyPressed);
                 }
@@ -44,10 +60,17 @@ pub fn run_hotkey_thread(event_tx: Sender<AppEvent>, config: HotkeyConfig) {
                 }
             }
             EventType::KeyRelease(key) => {
-                let mut held = held_clone.lock().unwrap();
+                let mut held = held_clone.lock();
                 held.remove(&key);
 
-                if key == target_key && active_clone.load(Ordering::SeqCst) {
+                if capturing.load(Ordering::SeqCst) {
+                    return;
+                }
+
+                let config = cfg.lock();
+                let target = parse_key(&config.key);
+
+                if key == target && active_clone.load(Ordering::SeqCst) {
                     active_clone.store(false, Ordering::SeqCst);
                     let _ = tx.send(AppEvent::HotkeyReleased);
                 }
@@ -56,12 +79,12 @@ pub fn run_hotkey_thread(event_tx: Sender<AppEvent>, config: HotkeyConfig) {
         }
     }) {
         log::error!("Hotkey listener error: {:?}", e);
-        eprintln!("Error: Could not start hotkey listener: {:?}", e);
-        eprintln!("On Linux, ensure you have X11 (not Wayland) and sufficient permissions.");
+        eprintln!("热键监听失败: {:?}", e);
+        eprintln!("Linux 请确保使用 X11（不是 Wayland）并有足够权限。");
     }
 }
 
-fn parse_key(name: &str) -> Key {
+pub fn parse_key(name: &str) -> Key {
     match name {
         "F1" => Key::F1,
         "F2" => Key::F2,
@@ -87,7 +110,7 @@ fn parse_key(name: &str) -> Key {
         "BackSlash" => Key::BackSlash,
         "RightAlt" | "AltGr" => Key::AltGr,
         other => {
-            log::warn!("Unknown key '{}', falling back to F9", other);
+            log::warn!("未知按键 '{}'，回退到 F9", other);
             Key::F9
         }
     }
