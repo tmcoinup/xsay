@@ -17,29 +17,38 @@ pub fn run_transcribe_thread(
     req_rx: Receiver<TranscribeReq>,
     reload_rx: Receiver<PathBuf>,
     transcript_tx: Sender<TranscriptSeg>,
-    initial_model_path: PathBuf,
+    initial_model_path: Option<PathBuf>,
 ) {
-    let mut ctx = match load_model(&initial_model_path) {
-        Some(c) => c,
-        None => return,
-    };
+    let mut ctx: Option<WhisperContext> =
+        initial_model_path.as_ref().and_then(|p| load_model(p));
+    if ctx.is_some() {
+        log::info!("Whisper model loaded");
+    } else {
+        log::warn!("Starting without a Whisper model (transcribe requests will be ignored)");
+    }
 
     loop {
         select! {
             recv(reload_rx) -> new_path => {
                 let new_path = match new_path { Ok(p) => p, Err(_) => break };
-                log::info!("Reloading Whisper model from {}", new_path.display());
+                log::info!("Loading Whisper model from {}", new_path.display());
                 match load_model(&new_path) {
                     Some(new_ctx) => {
-                        ctx = new_ctx;
-                        log::info!("Model reloaded successfully");
+                        ctx = Some(new_ctx);
+                        log::info!("Model loaded successfully");
                     }
-                    None => log::error!("Model reload failed; keeping previous model"),
+                    None => log::error!("Model load failed; keeping previous state"),
                 }
             }
             recv(req_rx) -> req => {
                 let req = match req { Ok(r) => r, Err(_) => break };
-                process_request(&ctx, req, &transcript_tx);
+                match &ctx {
+                    Some(c) => process_request(c, req, &transcript_tx),
+                    None => {
+                        log::warn!("No model loaded — transcribe request returning empty text");
+                        let _ = transcript_tx.send(TranscriptSeg { text: String::new() });
+                    }
+                }
             }
         }
     }
@@ -47,6 +56,10 @@ pub fn run_transcribe_thread(
 
 fn load_model(path: &PathBuf) -> Option<WhisperContext> {
     let s = path.to_string_lossy();
+    if !path.exists() {
+        log::warn!("Model file does not exist: {}", s);
+        return None;
+    }
     match WhisperContext::new_with_params(&s, WhisperContextParameters::default()) {
         Ok(c) => Some(c),
         Err(e) => {

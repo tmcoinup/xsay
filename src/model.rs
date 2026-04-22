@@ -1,6 +1,23 @@
 use crate::{config::ModelConfig, error::XsayError};
 use std::path::PathBuf;
 
+/// Return the local path of the configured model, without downloading.
+pub fn find_local(config: &ModelConfig) -> Option<PathBuf> {
+    if !config.path.is_empty() {
+        let p = PathBuf::from(&config.path);
+        if p.exists() {
+            return Some(p);
+        }
+    }
+    let cache_dir = dirs::cache_dir()?.join("xsay").join("models");
+    let cached = cache_dir.join(&config.hf_filename);
+    if cached.exists() {
+        Some(cached)
+    } else {
+        None
+    }
+}
+
 pub fn ensure_model(config: &ModelConfig) -> Result<PathBuf, XsayError> {
     // Use explicit path if provided
     if !config.path.is_empty() {

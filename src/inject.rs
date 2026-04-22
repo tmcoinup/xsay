@@ -2,6 +2,8 @@ use crate::config::InjectionConfig;
 use arboard::Clipboard;
 use crossbeam_channel::{Receiver, Sender};
 use enigo::{Direction, Enigo, Key, Keyboard, Settings};
+use parking_lot::Mutex;
+use std::sync::Arc;
 use std::time::Duration;
 
 pub enum InjectCmd {
@@ -11,7 +13,7 @@ pub enum InjectCmd {
 pub fn run_inject_thread(
     inject_rx: Receiver<InjectCmd>,
     done_tx: Sender<()>,
-    config: InjectionConfig,
+    shared_config: Arc<Mutex<InjectionConfig>>,
 ) {
     loop {
         let cmd = match inject_rx.recv() {
@@ -27,9 +29,10 @@ pub fn run_inject_thread(
                 }
                 log::debug!("Injecting text: {:?}", text);
 
-                match config.method.as_str() {
+                let cfg = shared_config.lock().clone();
+                match cfg.method.as_str() {
                     "type" => inject_via_keystrokes(&text),
-                    _ => inject_via_clipboard(&text, config.clipboard_delay_ms),
+                    _ => inject_via_clipboard(&text, cfg.clipboard_delay_ms),
                 }
 
                 let _ = done_tx.send(());

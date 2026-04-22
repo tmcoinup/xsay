@@ -1,7 +1,8 @@
 use crate::{
-    config::{Config, HotkeyConfig},
+    config::{AudioConfig, Config, HotkeyConfig, InjectionConfig, TranscriptionConfig},
     settings_ui::{self, SettingsState},
     state::{AppState, SharedState},
+    tray::{self, TrayAction},
 };
 use eframe::egui;
 use parking_lot::Mutex;
@@ -21,15 +22,26 @@ pub struct XsayOverlay {
 }
 
 impl XsayOverlay {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         shared_state: SharedState,
         shared_hotkey: Arc<Mutex<HotkeyConfig>>,
+        shared_audio: Arc<Mutex<AudioConfig>>,
+        shared_inject: Arc<Mutex<InjectionConfig>>,
+        shared_transcription: Arc<Mutex<TranscriptionConfig>>,
         capture_active: Arc<AtomicBool>,
         model_reload_tx: crossbeam_channel::Sender<std::path::PathBuf>,
     ) -> Self {
         let config = Config::load().unwrap_or_default();
-        let settings =
-            SettingsState::new(&config, shared_hotkey, capture_active, model_reload_tx);
+        let settings = SettingsState::new(
+            &config,
+            shared_hotkey,
+            shared_audio,
+            shared_inject,
+            shared_transcription,
+            capture_active,
+            model_reload_tx,
+        );
         Self {
             shared_state,
             animation_phase: 0.0,
@@ -42,6 +54,16 @@ impl XsayOverlay {
 
 impl eframe::App for XsayOverlay {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Handle tray menu events
+        for action in tray::poll_events() {
+            match action {
+                TrayAction::ShowSettings => self.show_settings = true,
+                TrayAction::Quit => {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+            }
+        }
+
         let state = self.shared_state.lock().clone();
 
         ctx.request_repaint_after(Duration::from_millis(33));

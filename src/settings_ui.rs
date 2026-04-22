@@ -1,5 +1,7 @@
 use crate::{
-    config::{Config, HotkeyConfig},
+    config::{
+        AudioConfig, Config, HotkeyConfig, InjectionConfig, TranscriptionConfig,
+    },
     download::{self, DlState, DownloadCmd, DownloadProgress},
 };
 use crossbeam_channel::Sender;
@@ -72,6 +74,7 @@ pub struct ActiveDownload {
 pub enum Tab {
     Model,
     Hotkey,
+    General,
 }
 
 pub struct SettingsState {
@@ -88,9 +91,15 @@ pub struct SettingsState {
     pub hotkey_mods: Vec<String>,
     pub capturing: bool,
 
-    // Shared with hotkey thread for live update
+    // Shared with worker threads for live update
     pub shared_hotkey: Arc<Mutex<HotkeyConfig>>,
+    pub shared_audio: Arc<Mutex<AudioConfig>>,
+    pub shared_inject: Arc<Mutex<InjectionConfig>>,
+    pub shared_transcription: Arc<Mutex<TranscriptionConfig>>,
     pub capture_active: Arc<AtomicBool>,
+
+    // General tab — list of audio device names (read-only info for now)
+    pub audio_devices: Vec<String>,
 
     pub cache_dir: PathBuf,
     pub hf_repo: String,
@@ -101,9 +110,13 @@ pub struct SettingsState {
 }
 
 impl SettingsState {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         config: &Config,
         shared_hotkey: Arc<Mutex<HotkeyConfig>>,
+        shared_audio: Arc<Mutex<AudioConfig>>,
+        shared_inject: Arc<Mutex<InjectionConfig>>,
+        shared_transcription: Arc<Mutex<TranscriptionConfig>>,
         capture_active: Arc<AtomicBool>,
         model_reload_tx: crossbeam_channel::Sender<PathBuf>,
     ) -> Self {
@@ -122,7 +135,11 @@ impl SettingsState {
             hotkey_mods: config.hotkey.modifiers.clone(),
             capturing: false,
             shared_hotkey,
+            shared_audio,
+            shared_inject,
+            shared_transcription,
             capture_active,
+            audio_devices: crate::audio::input_device_names(),
             cache_dir,
             hf_repo: config.model.hf_repo.clone(),
             model_reload_tx,
@@ -189,7 +206,7 @@ pub fn render(ctx: &egui::Context, state: &mut SettingsState) {
     egui::CentralPanel::default().show(ctx, |ui| {
         ui.horizontal(|ui| {
             if ui
-                .selectable_label(state.tab == Tab::Model, "🤖  模型设置")
+                .selectable_label(state.tab == Tab::Model, "🤖  模型")
                 .clicked()
             {
                 state.tab = Tab::Model;
@@ -200,12 +217,19 @@ pub fn render(ctx: &egui::Context, state: &mut SettingsState) {
             {
                 state.tab = Tab::Hotkey;
             }
+            if ui
+                .selectable_label(state.tab == Tab::General, "⚙  常规")
+                .clicked()
+            {
+                state.tab = Tab::General;
+            }
         });
         ui.separator();
 
         match state.tab {
             Tab::Model => render_model_tab(ui, state),
             Tab::Hotkey => render_hotkey_tab(ui, state, ctx),
+            Tab::General => render_general_tab(ui, state),
         }
     });
 }
@@ -243,10 +267,41 @@ fn render_model_tab(ui: &mut egui::Ui, state: &mut SettingsState) {
     // Check if active download just completed
     if let Some(DlState::Completed) = &dl_state_snap {
         if let Some(fname) = &active_dl_filename {
-            state.status_msg = Some((
-                format!("✓ {} 下载完成", fname),
-                egui::Color32::from_rgb(80, 200, 80),
-            ));
+            // Current configured model
+            let cur = Config::load()
+                .ok()
+                .map(|c| c.model.hf_filename)
+                .unwrap_or_default();
+            let cur_exists = !cur.is_empty() && state.cache_dir.join(&cur).exists();
+
+            let downloaded_path = state.cache_dir.join(fname);
+            let nice_name = MODELS
+                .iter()
+                .find(|m| m.filename == fname.as_str())
+                .map(|m| m.name)
+                .unwrap_or(fname.as_str());
+
+            if cur == *fname || !cur_exists {
+                // Auto-activate: either it's already the selected one, or no model was loaded
+                if let Ok(mut c) = Config::load() {
+                    c.model.hf_filename = fname.clone();
+                    if let Ok(p) = Config::config_path() {
+                        if let Ok(t) = toml::to_string_pretty(&c) {
+                            let _ = std::fs::write(p, t);
+                        }
+                    }
+                }
+                let _ = state.model_reload_tx.send(downloaded_path);
+                state.status_msg = Some((
+                    format!("✓ {} 下载完成并已启用", nice_name),
+                    egui::Color32::from_rgb(80, 200, 80),
+                ));
+            } else {
+                state.status_msg = Some((
+                    format!("✓ {} 下载完成", nice_name),
+                    egui::Color32::from_rgb(80, 200, 80),
+                ));
+            }
         }
         state.active_download = None;
     }
@@ -256,6 +311,29 @@ fn render_model_tab(ui: &mut egui::Ui, state: &mut SettingsState) {
 
     egui::ScrollArea::vertical().show(ui, |ui| {
         ui.spacing_mut().item_spacing.y = 6.0;
+
+        // Banner if no model is available
+        let cur_exists = !current_filename.is_empty()
+            && state.cache_dir.join(&current_filename).exists();
+        if !cur_exists {
+            egui::Frame::none()
+                .fill(egui::Color32::from_rgb(90, 45, 20))
+                .inner_margin(egui::Margin::symmetric(12.0, 10.0))
+                .rounding(egui::Rounding::same(6.0))
+                .show(ui, |ui| {
+                    ui.label(
+                        egui::RichText::new("⚠  当前没有可用模型，xsay 无法识别语音")
+                            .color(egui::Color32::WHITE)
+                            .strong(),
+                    );
+                    ui.label(
+                        egui::RichText::new("推荐下载 Medium (1.5 GB，中英文高精度)")
+                            .color(egui::Color32::from_rgb(255, 220, 150))
+                            .small(),
+                    );
+                });
+            ui.add_space(6.0);
+        }
 
         for model in MODELS {
             let local_path = state.cache_dir.join(model.filename);
@@ -665,6 +743,281 @@ fn render_hotkey_tab(ui: &mut egui::Ui, state: &mut SettingsState, _ctx: &egui::
         .weak()
         .small(),
     );
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// General tab
+// ---------------------------------------------------------------------------
+
+fn render_general_tab(ui: &mut egui::Ui, state: &mut SettingsState) {
+    egui::ScrollArea::vertical().show(ui, |ui| {
+        ui.spacing_mut().item_spacing.y = 8.0;
+
+        // Snapshot current shared configs
+        let mut tx = state.shared_transcription.lock().clone();
+        let mut inj = state.shared_inject.lock().clone();
+        let mut aud = state.shared_audio.lock().clone();
+
+        let mut changed = false;
+
+        // ----- 语音识别 -----
+        ui.group(|ui| {
+            ui.label(egui::RichText::new("语音识别").strong());
+            ui.add_space(4.0);
+
+            ui.horizontal(|ui| {
+                ui.label("语言：");
+                let langs: &[(&str, &str)] = &[
+                    ("auto", "自动检测"),
+                    ("zh", "中文"),
+                    ("en", "English"),
+                    ("ja", "日本語"),
+                    ("ko", "한국어"),
+                    ("fr", "Français"),
+                    ("de", "Deutsch"),
+                    ("es", "Español"),
+                    ("ru", "Русский"),
+                ];
+                let current_label = langs
+                    .iter()
+                    .find(|(c, _)| *c == tx.language)
+                    .map(|(_, l)| *l)
+                    .unwrap_or("自动检测");
+
+                egui::ComboBox::from_id_salt("lang")
+                    .selected_text(current_label)
+                    .show_ui(ui, |ui| {
+                        for (code, label) in langs {
+                            if ui
+                                .selectable_label(tx.language == *code, *label)
+                                .clicked()
+                            {
+                                tx.language = code.to_string();
+                                changed = true;
+                            }
+                        }
+                    });
+            });
+
+            if ui.checkbox(&mut tx.translate, "翻译为英文输出").changed() {
+                changed = true;
+            }
+
+            ui.horizontal(|ui| {
+                ui.label("推理线程：");
+                let mut n = tx.n_threads as i32;
+                if ui
+                    .add(egui::Slider::new(&mut n, 1..=16).integer())
+                    .changed()
+                {
+                    tx.n_threads = n;
+                    changed = true;
+                }
+            });
+        });
+
+        // ----- 文字注入 -----
+        ui.group(|ui| {
+            ui.label(egui::RichText::new("文字注入").strong());
+            ui.add_space(4.0);
+
+            ui.horizontal(|ui| {
+                ui.label("方式：");
+                let methods = [("clipboard", "剪贴板 (Ctrl+V)"), ("type", "键盘模拟")];
+                let current_label = methods
+                    .iter()
+                    .find(|(c, _)| *c == inj.method)
+                    .map(|(_, l)| *l)
+                    .unwrap_or("剪贴板 (Ctrl+V)");
+
+                egui::ComboBox::from_id_salt("inj_method")
+                    .selected_text(current_label)
+                    .show_ui(ui, |ui| {
+                        for (code, label) in &methods {
+                            if ui
+                                .selectable_label(inj.method == *code, *label)
+                                .clicked()
+                            {
+                                inj.method = code.to_string();
+                                changed = true;
+                            }
+                        }
+                    });
+            });
+
+            ui.horizontal(|ui| {
+                ui.label("剪贴板延迟：");
+                let mut delay = inj.clipboard_delay_ms as u64;
+                if ui
+                    .add(egui::Slider::new(&mut delay, 0..=500).suffix(" ms"))
+                    .changed()
+                {
+                    inj.clipboard_delay_ms = delay;
+                    changed = true;
+                }
+            });
+            ui.label(
+                egui::RichText::new("CJK 字符推荐剪贴板方式；慢设备上请调大延迟")
+                    .weak()
+                    .small(),
+            );
+        });
+
+        // ----- 音频 / 停顿检测 -----
+        ui.group(|ui| {
+            ui.label(egui::RichText::new("音频与停顿检测").strong());
+            ui.add_space(4.0);
+
+            ui.horizontal(|ui| {
+                ui.label("静音阈值：");
+                let mut t = aud.silence_threshold;
+                if ui
+                    .add(
+                        egui::Slider::new(&mut t, 0.001..=0.1)
+                            .logarithmic(true)
+                            .fixed_decimals(3),
+                    )
+                    .changed()
+                {
+                    aud.silence_threshold = t;
+                    changed = true;
+                }
+                ui.label(egui::RichText::new("（越小越灵敏）").weak().small());
+            });
+
+            ui.horizontal(|ui| {
+                ui.label("停顿长度：");
+                let mut f = aud.silence_frames as i32;
+                if ui
+                    .add(egui::Slider::new(&mut f, 8..=80).integer())
+                    .changed()
+                {
+                    aud.silence_frames = f as u32;
+                    changed = true;
+                }
+                let approx_secs = (aud.silence_frames as f32) * 1024.0 / 16000.0;
+                ui.label(
+                    egui::RichText::new(format!("约 {:.1} 秒", approx_secs))
+                        .weak()
+                        .small(),
+                );
+            });
+
+            ui.horizontal(|ui| {
+                ui.label("最长录音：");
+                let mut m = aud.max_record_seconds as i32;
+                if ui
+                    .add(egui::Slider::new(&mut m, 5..=180).integer().suffix(" 秒"))
+                    .changed()
+                {
+                    aud.max_record_seconds = m as u32;
+                    changed = true;
+                }
+            });
+        });
+
+        // ----- 麦克风 -----
+        ui.group(|ui| {
+            ui.label(egui::RichText::new("麦克风").strong());
+            ui.add_space(4.0);
+
+            ui.label(
+                egui::RichText::new(format!("可用设备 ({})", state.audio_devices.len()))
+                    .small(),
+            );
+            for name in &state.audio_devices {
+                ui.label(
+                    egui::RichText::new(format!("  • {}", name))
+                        .small()
+                        .weak(),
+                );
+            }
+            ui.label(
+                egui::RichText::new("目前使用系统默认设备，切换设备需在 config.toml 中指定")
+                    .weak()
+                    .small(),
+            );
+        });
+
+        // ----- 浮层 -----
+        ui.group(|ui| {
+            ui.label(egui::RichText::new("浮层").strong());
+            ui.add_space(4.0);
+
+            ui.horizontal(|ui| {
+                ui.label("位置：");
+                let positions: &[(&str, &str)] = &[
+                    ("top-right", "右上角"),
+                    ("top-left", "左上角"),
+                    ("bottom-right", "右下角"),
+                    ("bottom-left", "左下角"),
+                    ("center", "居中"),
+                ];
+                let mut pos_cfg = Config::load().ok().map(|c| c.overlay.position);
+                let current = pos_cfg
+                    .as_ref()
+                    .and_then(|p| {
+                        positions.iter().find(|(c, _)| *c == p.as_str()).map(|(_, l)| *l)
+                    })
+                    .unwrap_or("右上角");
+                egui::ComboBox::from_id_salt("overlay_pos")
+                    .selected_text(current)
+                    .show_ui(ui, |ui| {
+                        for (code, label) in positions {
+                            let is_sel = pos_cfg.as_deref() == Some(*code);
+                            if ui.selectable_label(is_sel, *label).clicked() {
+                                if let Ok(mut cfg) = Config::load() {
+                                    cfg.overlay.position = code.to_string();
+                                    if let Ok(p) = Config::config_path() {
+                                        if let Ok(t) = toml::to_string_pretty(&cfg) {
+                                            let _ = std::fs::write(p, t);
+                                        }
+                                    }
+                                }
+                                pos_cfg = Some(code.to_string());
+                            }
+                        }
+                    });
+                ui.label(
+                    egui::RichText::new("（重启后生效）")
+                        .color(egui::Color32::from_rgb(255, 200, 120))
+                        .small(),
+                );
+            });
+        });
+
+        // Persist + broadcast live changes
+        if changed {
+            *state.shared_transcription.lock() = tx.clone();
+            *state.shared_inject.lock() = inj.clone();
+            *state.shared_audio.lock() = aud.clone();
+
+            if let Ok(mut cfg) = Config::load() {
+                cfg.transcription = tx;
+                cfg.injection = inj;
+                cfg.audio = aud;
+                if let Ok(p) = Config::config_path() {
+                    if let Ok(t) = toml::to_string_pretty(&cfg) {
+                        let _ = std::fs::write(p, t);
+                    }
+                }
+            }
+
+            state.status_msg = Some((
+                "✓ 已保存并生效".to_string(),
+                egui::Color32::from_rgb(80, 200, 80),
+            ));
+        }
+
+        if let Some((msg, color)) = &state.status_msg {
+            ui.add_space(4.0);
+            ui.label(egui::RichText::new(msg).color(*color).small());
+        }
+    });
 }
 
 // ---------------------------------------------------------------------------

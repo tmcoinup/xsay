@@ -1,6 +1,8 @@
 use crate::config::AudioConfig;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use crossbeam_channel::{Receiver, Sender};
+use parking_lot::Mutex;
+use std::sync::Arc;
 
 pub enum AudioCmd {
     StartRecording,
@@ -17,21 +19,27 @@ pub struct AudioChunk {
 pub fn list_devices() {
     let host = cpal::default_host();
     println!("Available input devices:");
-    match host.input_devices() {
-        Ok(devices) => {
-            for (i, dev) in devices.enumerate() {
-                let name = dev.name().unwrap_or_else(|_| "<unknown>".to_string());
-                println!("  [{}] {}", i, name);
-            }
-        }
-        Err(e) => eprintln!("Error listing devices: {}", e),
+    for (i, name) in input_device_names().iter().enumerate() {
+        println!("  [{}] {}", i, name);
     }
+    let _ = host; // suppress unused warning when called via CLI
+}
+
+/// Returns the names of available input devices, or an empty Vec on failure.
+pub fn input_device_names() -> Vec<String> {
+    let host = cpal::default_host();
+    host.input_devices()
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(|d| d.name().ok())
+        .collect()
 }
 
 pub fn run_audio_thread(
     cmd_rx: Receiver<AudioCmd>,
     chunk_tx: Sender<AudioChunk>,
-    config: AudioConfig,
+    shared_config: Arc<Mutex<AudioConfig>>,
 ) {
     let host = cpal::default_host();
     let device = match host.default_input_device() {
@@ -166,8 +174,11 @@ pub fn run_audio_thread(
             continue;
         }
 
+        // Snapshot live-configurable values for this loop iteration
+        let cfg = shared_config.lock().clone();
+
         // Check max duration
-        if recording_start.elapsed().as_secs() >= config.max_record_seconds as u64 {
+        if recording_start.elapsed().as_secs() >= cfg.max_record_seconds as u64 {
             log::debug!("Max duration reached, stopping recording");
             recording = false;
             let _ = stream.pause();
@@ -193,14 +204,14 @@ pub fn run_audio_thread(
 
             // Check RMS of this chunk for silence detection
             let chunk_rms = rms(&resampled);
-            if chunk_rms < config.silence_threshold {
+            if chunk_rms < cfg.silence_threshold {
                 silent_chunks += 1;
             } else {
                 silent_chunks = 0;
             }
 
             // Pause detected: send chunk for transcription and keep recording
-            if silent_chunks >= config.silence_frames && accumulator.len() > 16000 {
+            if silent_chunks >= cfg.silence_frames && accumulator.len() > 16000 {
                 silent_chunks = 0;
                 let samples = std::mem::take(&mut accumulator);
                 log::debug!(
