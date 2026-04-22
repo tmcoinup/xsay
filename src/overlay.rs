@@ -6,10 +6,7 @@ use crate::{
 use eframe::egui;
 use parking_lot::Mutex;
 use std::{
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc,
-    },
+    sync::{atomic::AtomicBool, Arc},
     time::Duration,
 };
 
@@ -28,9 +25,11 @@ impl XsayOverlay {
         shared_state: SharedState,
         shared_hotkey: Arc<Mutex<HotkeyConfig>>,
         capture_active: Arc<AtomicBool>,
+        model_reload_tx: crossbeam_channel::Sender<std::path::PathBuf>,
     ) -> Self {
         let config = Config::load().unwrap_or_default();
-        let settings = SettingsState::new(&config, shared_hotkey, capture_active);
+        let settings =
+            SettingsState::new(&config, shared_hotkey, capture_active, model_reload_tx);
         Self {
             shared_state,
             animation_phase: 0.0,

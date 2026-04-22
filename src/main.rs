@@ -82,6 +82,8 @@ fn main() -> anyhow::Result<()> {
     let (transcript_tx, transcript_rx) = crossbeam_channel::unbounded::<TranscriptSeg>();
     let (inject_tx, inject_rx) = crossbeam_channel::unbounded::<InjectCmd>();
     let (inject_done_tx, inject_done_rx) = crossbeam_channel::unbounded::<()>();
+    let (model_reload_tx, model_reload_rx) =
+        crossbeam_channel::unbounded::<std::path::PathBuf>();
 
     // Spawn worker threads
     {
@@ -98,7 +100,12 @@ fn main() -> anyhow::Result<()> {
     {
         let mp = model_path.clone();
         std::thread::spawn(move || {
-            transcribe::run_transcribe_thread(transcribe_req_rx, transcript_tx, mp)
+            transcribe::run_transcribe_thread(
+                transcribe_req_rx,
+                model_reload_rx,
+                transcript_tx,
+                mp,
+            )
         });
     }
 
@@ -141,6 +148,7 @@ fn main() -> anyhow::Result<()> {
                 shared_state,
                 shared_hotkey,
                 capture_active,
+                model_reload_tx,
             )))
         }),
     )

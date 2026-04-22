@@ -95,6 +95,8 @@ pub struct SettingsState {
     pub cache_dir: PathBuf,
     pub hf_repo: String,
 
+    pub model_reload_tx: crossbeam_channel::Sender<PathBuf>,
+
     pub status_msg: Option<(String, egui::Color32)>,
 }
 
@@ -103,6 +105,7 @@ impl SettingsState {
         config: &Config,
         shared_hotkey: Arc<Mutex<HotkeyConfig>>,
         capture_active: Arc<AtomicBool>,
+        model_reload_tx: crossbeam_channel::Sender<PathBuf>,
     ) -> Self {
         let cache_dir = dirs::cache_dir()
             .unwrap_or_default()
@@ -122,6 +125,7 @@ impl SettingsState {
             capture_active,
             cache_dir,
             hf_repo: config.model.hf_repo.clone(),
+            model_reload_tx,
             status_msg: None,
         }
     }
@@ -144,7 +148,6 @@ pub fn render(ctx: &egui::Context, state: &mut SettingsState) {
 
     // Key capture
     if state.capturing {
-        let mut done = false;
         ctx.input(|i| {
             for event in &i.events {
                 if let egui::Event::Key {
@@ -155,15 +158,12 @@ pub fn render(ctx: &egui::Context, state: &mut SettingsState) {
                 } = event
                 {
                     if *key == egui::Key::Escape {
-                        // Cancel capture
-                        done = true;
                         state.capturing = false;
                         state.capture_active.store(false, Ordering::SeqCst);
                         return;
                     }
                     if let Some(name) = egui_key_to_rdev(*key) {
                         state.hotkey_key = name.to_string();
-                        // Also capture modifiers at time of press
                         let mut mods = Vec::new();
                         if modifiers.ctrl {
                             mods.push("ctrl".to_string());
@@ -180,7 +180,6 @@ pub fn render(ctx: &egui::Context, state: &mut SettingsState) {
                         state.hotkey_mods = mods;
                         state.capturing = false;
                         state.capture_active.store(false, Ordering::SeqCst);
-                        done = true;
                     }
                 }
             }
@@ -284,14 +283,10 @@ fn render_model_tab(ui: &mut egui::Ui, state: &mut SettingsState) {
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
                         // --- Select radio ---
-                        let mut selected = is_current;
+                        let selected = is_current;
                         let radio = ui.radio(selected, "");
                         if radio.clicked() && is_downloaded && !is_current {
-                            select_model(model.filename, &state.hf_repo);
-                            state.status_msg = Some((
-                                format!("已切换到 {} 模型（重启后生效）", model.name),
-                                egui::Color32::from_rgb(100, 180, 255),
-                            ));
+                            switch_model(model, &local_path, state);
                         }
 
                         ui.vertical(|ui| {
@@ -422,14 +417,7 @@ fn render_model_tab(ui: &mut egui::Ui, state: &mut SettingsState) {
 
                                     if is_downloaded && !is_current {
                                         if ui.small_button("✓ 切换使用").clicked() {
-                                            select_model(model.filename, &state.hf_repo);
-                                            state.status_msg = Some((
-                                                format!(
-                                                    "已切换到 {} 模型（重启后生效）",
-                                                    model.name
-                                                ),
-                                                egui::Color32::from_rgb(100, 180, 255),
-                                            ));
+                                            switch_model(model, &local_path, state);
                                         }
                                         if ui.small_button("🗑 删除").clicked() {
                                             let _ = std::fs::remove_file(&local_path);
@@ -500,15 +488,22 @@ fn start_model_download(model: &ModelInfo, state: &mut SettingsState) {
     });
 }
 
-fn select_model(filename: &str, hf_repo: &str) {
+fn switch_model(model: &ModelInfo, local_path: &PathBuf, state: &mut SettingsState) {
+    // Persist to config.toml
     if let Ok(mut cfg) = Config::load() {
-        cfg.model.hf_filename = filename.to_string();
+        cfg.model.hf_filename = model.filename.to_string();
         if let Ok(path) = Config::config_path() {
             if let Ok(text) = toml::to_string_pretty(&cfg) {
                 let _ = std::fs::write(path, text);
             }
         }
     }
+    // Live reload in the transcribe thread
+    let _ = state.model_reload_tx.send(local_path.clone());
+    state.status_msg = Some((
+        format!("✓ 已切换到 {} 模型（后台加载中）", model.name),
+        egui::Color32::from_rgb(80, 220, 80),
+    ));
 }
 
 fn check_all_updates(state: &mut SettingsState) {
@@ -527,7 +522,7 @@ fn check_all_updates(state: &mut SettingsState) {
 // Hotkey tab
 // ---------------------------------------------------------------------------
 
-fn render_hotkey_tab(ui: &mut egui::Ui, state: &mut SettingsState, ctx: &egui::Context) {
+fn render_hotkey_tab(ui: &mut egui::Ui, state: &mut SettingsState, _ctx: &egui::Context) {
     ui.add_space(8.0);
 
     // Current hotkey display
