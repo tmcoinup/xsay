@@ -473,3 +473,97 @@ pub fn radio_button(ui: &mut Ui, selected: bool, color: egui::Color32) -> Respon
     }
     response
 }
+
+/// Custom checkbox with the same visual language as `radio_button` — rounded
+/// square frame, filled with accent on check. Returns the click response.
+pub fn checkbox(ui: &mut Ui, checked: bool, color: egui::Color32) -> Response {
+    let size = egui::vec2(18.0, 18.0);
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+    let r = Rect::from_center_size(rect.center(), egui::vec2(14.0, 14.0));
+    let frame_color = if checked {
+        color
+    } else if response.hovered() {
+        TEXT_PRIMARY
+    } else {
+        TEXT_SECONDARY
+    };
+    if checked {
+        ui.painter().rect_filled(r, CornerRadius::same(3), color);
+        let inner = r.shrink(3.0);
+        let p1 = egui::pos2(inner.min.x + inner.width() * 0.15, inner.center().y + 1.0);
+        let p2 = egui::pos2(
+            inner.min.x + inner.width() * 0.42,
+            inner.max.y - inner.height() * 0.2,
+        );
+        let p3 = egui::pos2(inner.max.x - inner.width() * 0.1, inner.min.y + 2.0);
+        let stroke = Stroke::new(1.8, egui::Color32::WHITE);
+        ui.painter().line_segment([p1, p2], stroke);
+        ui.painter().line_segment([p2, p3], stroke);
+    } else {
+        ui.painter()
+            .rect_stroke(r, CornerRadius::same(3), Stroke::new(1.5, frame_color), StrokeKind::Middle);
+    }
+    response
+}
+
+/// Card container matching the Figma section style: BG_CARD background,
+/// radius_lg corners, generous inner margin. Title rendered on its own row;
+/// body receives a Ui with `set_min_width(available_width)` already applied.
+pub fn section_card<R>(
+    ui: &mut Ui,
+    title: &str,
+    add_contents: impl FnOnce(&mut Ui) -> R,
+) -> R {
+    let mut inner: Option<R> = None;
+    egui::Frame::new()
+        .fill(BG_CARD)
+        .corner_radius(radius_lg())
+        .inner_margin(egui::Margin::symmetric(16, 14))
+        .show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            ui.label(
+                egui::RichText::new(title)
+                    .color(TEXT_PRIMARY)
+                    .strong()
+                    .size(FONT_HEADING),
+            );
+            ui.add_space(8.0);
+            inner = Some(add_contents(ui));
+        });
+    inner.expect("section_card body always runs")
+}
+
+/// A "form row" — label on the left in TEXT_SECONDARY, control on the right,
+/// baseline aligned. Used by the General and Hotkey tabs so every row reads
+/// the same height and color.
+pub fn form_row<R>(
+    ui: &mut Ui,
+    label: &str,
+    add_contents: impl FnOnce(&mut Ui) -> R,
+) -> R {
+    let mut inner: Option<R> = None;
+    ui.horizontal(|ui| {
+        ui.set_min_width(ui.available_width());
+        ui.add_sized(
+            egui::vec2(96.0, 20.0),
+            egui::Label::new(
+                egui::RichText::new(label)
+                    .color(TEXT_SECONDARY)
+                    .size(FONT_BODY),
+            )
+            .selectable(false),
+        );
+        inner = Some(add_contents(ui));
+    });
+    inner.expect("form_row body always runs")
+}
+
+/// Small secondary line under a form row — weak text, small size.
+pub fn helper_text(ui: &mut Ui, text: &str) {
+    ui.add_space(2.0);
+    ui.label(
+        egui::RichText::new(text)
+            .color(TEXT_SECONDARY)
+            .size(FONT_SM),
+    );
+}

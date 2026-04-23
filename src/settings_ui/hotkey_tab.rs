@@ -2,6 +2,7 @@
 
 use super::SettingsState;
 use crate::config::Config;
+use crate::theme::{self, Icon};
 use eframe::egui;
 use std::sync::atomic::Ordering;
 
@@ -87,14 +88,29 @@ fn end_capture(state: &mut SettingsState) {
 }
 
 pub fn render(ui: &mut egui::Ui, state: &mut SettingsState) {
-    ui.add_space(4.0);
+    egui::ScrollArea::vertical().show(ui, |ui| {
+        ui.spacing_mut().item_spacing.y = 10.0;
 
-    render_backend_warning(ui, state);
+        render_backend_warning(ui, state);
+        render_current_card(ui, state);
+        render_capture_card(ui, state);
+        render_mode_card(ui, state);
+        render_modifier_card(ui, state);
+        render_save_card(ui, state);
 
-    ui.group(|ui| {
-        ui.label(egui::RichText::new("当前快捷键").strong());
-        ui.add_space(4.0);
+        if let Some((msg, color)) = &state.status_msg {
+            ui.add_space(4.0);
+            ui.label(
+                egui::RichText::new(msg)
+                    .color(*color)
+                    .size(crate::theme::FONT_SM),
+            );
+        }
+    });
+}
 
+fn render_current_card(ui: &mut egui::Ui, state: &SettingsState) {
+    theme::section_card(ui, "当前快捷键", |ui| {
         let display = if state.hotkey_mods.is_empty() {
             state.hotkey_key.clone()
         } else {
@@ -106,129 +122,143 @@ pub fn render(ui: &mut egui::Ui, state: &mut SettingsState) {
                 .size(crate::theme::FONT_HERO)
                 .color(crate::theme::ACCENT),
         );
-    });
 
-    ui.add_space(12.0);
-
-    ui.horizontal(|ui| {
-        ui.label("点击设置新按键：");
-        let (btn_text, btn_color) = if state.capturing {
-            (
-                "⌨  请按下目标按键...".to_string(),
-                crate::theme::WARNING,
-            )
+        let mode_hint = if state.hotkey_mode == "toggle" {
+            "点按切换：按一次开始录音，再按一次结束并输入。停顿 1.5 秒自动识别。"
         } else {
-            ("  捕捉按键  ".to_string(), ui.visuals().text_color())
+            "按住说话：按住快捷键录音，松开转写输入。停顿 1.5 秒自动识别。"
         };
-        let btn = ui.add(
-            egui::Button::new(egui::RichText::new(&btn_text).color(btn_color))
-                .min_size(egui::vec2(180.0, 30.0)),
-        );
-        if btn.clicked() {
-            state.capturing = !state.capturing;
-            state.capture_active.store(state.capturing, Ordering::SeqCst);
-            state.capture_slot.active.store(state.capturing, Ordering::SeqCst);
-            // Clear any stale capture when starting or stopping.
-            *state.capture_slot.latest.lock() = None;
-        }
+        theme::helper_text(ui, mode_hint);
     });
-
-    if state.capturing {
-        ui.label(
-            egui::RichText::new("按下任意功能键 (F1-F12, Home, End 等) 或字母键，按 Esc 取消")
-                .weak()
-                .small(),
-        );
-    }
-
-    ui.add_space(10.0);
-
-    ui.horizontal(|ui| {
-        ui.label("或手动输入键名：");
-        ui.add(egui::TextEdit::singleline(&mut state.hotkey_key).desired_width(120.0));
-        ui.label(
-            egui::RichText::new("如 Pause, ScrollLock, CapsLock")
-                .weak()
-                .small(),
-        );
-    });
-
-    ui.add_space(10.0);
-
-    ui.label(egui::RichText::new("触发模式：").strong());
-    ui.horizontal(|ui| {
-        if ui
-            .radio(state.hotkey_mode == "hold", "按住说话（松开识别）")
-            .clicked()
-        {
-            state.hotkey_mode = "hold".to_string();
-        }
-        if ui
-            .radio(state.hotkey_mode == "toggle", "点按切换（再按结束）")
-            .clicked()
-        {
-            state.hotkey_mode = "toggle".to_string();
-        }
-    });
-
-    ui.add_space(10.0);
-
-    ui.label(egui::RichText::new("修饰键（可选）：").strong());
-    ui.horizontal(|ui| {
-        for (key, label) in &[
-            ("ctrl", "Ctrl"),
-            ("alt", "Alt"),
-            ("shift", "Shift"),
-            ("super", "Super"),
-        ] {
-            let mut checked = state.hotkey_mods.contains(&key.to_string());
-            if ui.checkbox(&mut checked, *label).clicked() {
-                if checked {
-                    if !state.hotkey_mods.contains(&key.to_string()) {
-                        state.hotkey_mods.push(key.to_string());
-                    }
-                } else {
-                    state.hotkey_mods.retain(|x| x.as_str() != *key);
-                }
-            }
-        }
-    });
-
-    ui.add_space(16.0);
-    ui.separator();
-    ui.add_space(8.0);
-
-    render_save_buttons(ui, state);
-
-    if let Some((msg, color)) = &state.status_msg {
-        ui.add_space(6.0);
-        ui.label(egui::RichText::new(msg).color(*color));
-    }
-
-    ui.add_space(12.0);
-    ui.separator();
-    ui.add_space(4.0);
-    let tip = if state.hotkey_mode == "toggle" {
-        "提示：点按快捷键开始录音，再按一次结束并输入。停顿 1.5 秒自动识别。Esc 取消。"
-    } else {
-        "提示：按住快捷键录音，松开转写输入。停顿 1.5 秒自动识别。Esc 取消。"
-    };
-    ui.label(egui::RichText::new(tip).weak().small());
 }
 
-fn render_save_buttons(ui: &mut egui::Ui, state: &mut SettingsState) {
+fn render_capture_card(ui: &mut egui::Ui, state: &mut SettingsState) {
+    theme::section_card(ui, "设置新按键", |ui| {
+        theme::form_row(ui, "快捷键", |ui| {
+            let (icon, label, color) = if state.capturing {
+                (Icon::Keyboard, "请按下目标按键...", crate::theme::WARNING)
+            } else {
+                (Icon::Keyboard, "捕捉按键", crate::theme::ACCENT)
+            };
+            if theme::icon_link_button(ui, icon, label, color).clicked() {
+                state.capturing = !state.capturing;
+                state
+                    .capture_active
+                    .store(state.capturing, Ordering::SeqCst);
+                state
+                    .capture_slot
+                    .active
+                    .store(state.capturing, Ordering::SeqCst);
+                *state.capture_slot.latest.lock() = None;
+            }
+        });
+        if state.capturing {
+            theme::helper_text(
+                ui,
+                "支持 F1–F12、Home/End/PageUp/PageDown、字母键等。按 Esc 取消。",
+            );
+        }
+
+        ui.add_space(4.0);
+        theme::form_row(ui, "或直接输入", |ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut state.hotkey_key)
+                    .desired_width(140.0)
+                    .font(egui::TextStyle::Monospace),
+            );
+            ui.label(
+                egui::RichText::new("如 Pause / ScrollLock / CapsLock")
+                    .color(crate::theme::TEXT_SECONDARY)
+                    .size(crate::theme::FONT_SM),
+            );
+        });
+    });
+}
+
+fn render_mode_card(ui: &mut egui::Ui, state: &mut SettingsState) {
+    theme::section_card(ui, "触发模式", |ui| {
+        render_mode_row(ui, state, "hold", "按住说话", "松开后开始识别");
+        ui.add_space(6.0);
+        render_mode_row(ui, state, "toggle", "点按切换", "再按一次结束");
+    });
+}
+
+fn render_mode_row(
+    ui: &mut egui::Ui,
+    state: &mut SettingsState,
+    value: &str,
+    title: &str,
+    subtitle: &str,
+) {
+    let selected = state.hotkey_mode == value;
+    ui.horizontal(|ui| {
+        if theme::radio_button(ui, selected, crate::theme::ACCENT).clicked() {
+            state.hotkey_mode = value.to_string();
+        }
+        ui.add_space(4.0);
+        ui.vertical(|ui| {
+            ui.label(
+                egui::RichText::new(title)
+                    .color(crate::theme::TEXT_PRIMARY)
+                    .size(crate::theme::FONT_BODY),
+            );
+            ui.label(
+                egui::RichText::new(subtitle)
+                    .color(crate::theme::TEXT_SECONDARY)
+                    .size(crate::theme::FONT_SM),
+            );
+        });
+    });
+}
+
+fn render_modifier_card(ui: &mut egui::Ui, state: &mut SettingsState) {
+    theme::section_card(ui, "修饰键（可选）", |ui| {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 14.0;
+            for (key, label) in &[
+                ("ctrl", "Ctrl"),
+                ("alt", "Alt"),
+                ("shift", "Shift"),
+                ("super", "Super"),
+            ] {
+                let checked = state.hotkey_mods.iter().any(|m| m == key);
+                ui.horizontal(|ui| {
+                    if theme::checkbox(ui, checked, crate::theme::ACCENT).clicked() {
+                        if checked {
+                            state.hotkey_mods.retain(|x| x != key);
+                        } else {
+                            state.hotkey_mods.push(key.to_string());
+                        }
+                    }
+                    ui.add_space(2.0);
+                    ui.label(
+                        egui::RichText::new(*label)
+                            .color(crate::theme::TEXT_PRIMARY)
+                            .size(crate::theme::FONT_BODY),
+                    );
+                });
+            }
+        });
+    });
+}
+
+fn render_save_card(ui: &mut egui::Ui, state: &mut SettingsState) {
     let (saved_key, saved_mods, saved_mode) = {
         let hk = state.shared_hotkey.lock();
         (hk.key.clone(), hk.modifiers.clone(), hk.mode.clone())
     };
-
     let changed = state.hotkey_key != saved_key
         || state.hotkey_mods != saved_mods
         || state.hotkey_mode != saved_mode;
 
     ui.horizontal(|ui| {
-        let save_btn = ui.add_enabled(changed, egui::Button::new("💾  保存快捷键"));
-        if save_btn.clicked() {
+        let save_color = if changed {
+            crate::theme::ACCENT
+        } else {
+            crate::theme::TEXT_DISABLED
+        };
+        let resp = theme::icon_link_button(ui, Icon::Check, "保存快捷键", save_color);
+        if changed && resp.clicked() {
             {
                 let mut hk = state.shared_hotkey.lock();
                 hk.key = state.hotkey_key.clone();
@@ -251,13 +281,18 @@ fn render_save_buttons(ui: &mut egui::Ui, state: &mut SettingsState) {
                 "按住说话"
             };
             state.status_msg = Some((
-                format!("✓ 快捷键已更新为 {}（{}）", state.hotkey_key, mode_label),
+                format!("快捷键已更新为 {}（{}）", state.hotkey_key, mode_label),
                 crate::theme::SUCCESS,
             ));
         }
 
-        let revert_btn = ui.add_enabled(changed, egui::Button::new("↩  还原"));
-        if revert_btn.clicked() {
+        let revert_color = if changed {
+            crate::theme::DANGER_HOVER
+        } else {
+            crate::theme::TEXT_DISABLED
+        };
+        let rresp = theme::icon_link_button(ui, Icon::X, "还原", revert_color);
+        if changed && rresp.clicked() {
             state.hotkey_key = saved_key;
             state.hotkey_mods = saved_mods;
             state.hotkey_mode = saved_mode;
@@ -335,9 +370,10 @@ fn render_backend_warning(ui: &mut egui::Ui, state: &SettingsState) {
             banner(
                 ui,
                 crate::theme::BG_CARD,
+                Icon::Check,
                 crate::theme::SUCCESS,
                 &format!(
-                    "✓ Wayland + evdev 后端已启用，监听 {} 个键盘设备。快捷键在任何窗口都有效。",
+                    "Wayland + evdev 后端已启用，监听 {} 个键盘设备。快捷键在任何窗口都有效。",
                     devices
                 ),
                 None,
@@ -347,40 +383,48 @@ fn render_backend_warning(ui: &mut egui::Ui, state: &SettingsState) {
             banner(
                 ui,
                 egui::Color32::from_rgb(0x5A, 0x2D, 0x14),
+                Icon::Warning,
                 crate::theme::WARNING,
-                "⚠ Wayland 会话 + 只有 rdev 后端，快捷键仅在 X11 / XWayland 窗口有效，在原生 Wayland 应用中不会触发。",
+                "Wayland 会话 + 只有 rdev 后端，快捷键仅在 X11 / XWayland 窗口有效，原生 Wayland 应用不会触发。",
                 Some(&format!(
-                    "解决方案一：执行 sudo usermod -aG input $USER，注销后重新登录，xsay 将自动切换到 evdev。\n\
-                     解决方案二：改用 X11 会话（登录界面选择 \"GNOME on Xorg\"）。\n\
+                    "修复方法一：sudo usermod -aG input $USER，注销重登后 xsay 自动切换到 evdev。\n\
+                     修复方法二：改用 X11 会话（登录界面选择 GNOME on Xorg）。\n\
                      evdev 报错：{}",
                     evdev_error
                 )),
             );
         }
     }
-    ui.add_space(6.0);
 }
 
 fn banner(
     ui: &mut egui::Ui,
     bg: egui::Color32,
+    icon: Icon,
     title_color: egui::Color32,
     title: &str,
     subline: Option<&str>,
 ) {
     egui::Frame::new()
         .fill(bg)
-        .inner_margin(egui::Margin::symmetric(12, 10))
-        .corner_radius(crate::theme::radius_md())
+        .inner_margin(egui::Margin::symmetric(14, 12))
+        .corner_radius(crate::theme::radius_lg())
         .show(ui, |ui| {
-            ui.label(
-                egui::RichText::new(title)
-                    .color(title_color)
-                    .strong()
-                    .size(crate::theme::FONT_BODY),
-            );
-            if let Some(s) = subline {
+            ui.set_min_width(ui.available_width());
+            ui.horizontal(|ui| {
+                let (rect, _) =
+                    ui.allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::hover());
+                theme::draw_icon(ui.painter(), rect, icon, title_color);
                 ui.add_space(2.0);
+                ui.label(
+                    egui::RichText::new(title)
+                        .color(title_color)
+                        .strong()
+                        .size(crate::theme::FONT_BODY),
+                );
+            });
+            if let Some(s) = subline {
+                ui.add_space(4.0);
                 ui.label(
                     egui::RichText::new(s)
                         .color(crate::theme::TEXT_SECONDARY)

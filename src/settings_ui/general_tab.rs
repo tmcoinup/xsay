@@ -2,23 +2,24 @@
 
 use super::SettingsState;
 use crate::config::Config;
+use crate::theme::{self, Icon};
 use eframe::egui;
 
 pub fn render(ui: &mut egui::Ui, state: &mut SettingsState) {
     egui::ScrollArea::vertical().show(ui, |ui| {
-        ui.spacing_mut().item_spacing.y = 8.0;
+        ui.spacing_mut().item_spacing.y = 10.0;
 
         let mut tx = state.shared_transcription.lock().clone();
         let mut inj = state.shared_inject.lock().clone();
         let mut aud = state.shared_audio.lock().clone();
         let mut changed = false;
 
-        render_transcription_group(ui, &mut tx, &mut changed);
-        render_injection_group(ui, &mut inj, &mut changed);
-        render_audio_group(ui, &mut aud, &mut changed);
-        render_microphone_group(ui, state);
-        render_system_group(ui, state);
-        render_overlay_group(ui, state);
+        render_transcription_card(ui, &mut tx, &mut changed);
+        render_injection_card(ui, &mut inj, &mut changed);
+        render_audio_card(ui, &mut aud, &mut changed);
+        render_microphone_card(ui, state);
+        render_system_card(ui, state);
+        render_overlay_card(ui, state);
 
         if changed {
             *state.shared_transcription.lock() = tx.clone();
@@ -36,30 +37,28 @@ pub fn render(ui: &mut egui::Ui, state: &mut SettingsState) {
                 }
             }
 
-            state.status_msg = Some((
-                "✓ 已保存并生效".to_string(),
-                crate::theme::SUCCESS,
-            ));
+            state.status_msg =
+                Some(("已保存并生效".to_string(), crate::theme::SUCCESS));
         }
 
         if let Some((msg, color)) = &state.status_msg {
             ui.add_space(4.0);
-            ui.label(egui::RichText::new(msg).color(*color).small());
+            ui.label(
+                egui::RichText::new(msg)
+                    .color(*color)
+                    .size(crate::theme::FONT_SM),
+            );
         }
     });
 }
 
-fn render_transcription_group(
+fn render_transcription_card(
     ui: &mut egui::Ui,
     tx: &mut crate::config::TranscriptionConfig,
     changed: &mut bool,
 ) {
-    ui.group(|ui| {
-        ui.label(egui::RichText::new("语音识别").strong());
-        ui.add_space(4.0);
-
-        ui.horizontal(|ui| {
-            ui.label("语言：");
+    theme::section_card(ui, "语音识别", |ui| {
+        theme::form_row(ui, "识别语言", |ui| {
             let langs: &[(&str, &str)] = &[
                 ("auto", "自动检测"),
                 ("zh", "中文"),
@@ -92,12 +91,22 @@ fn render_transcription_group(
                 });
         });
 
-        if ui.checkbox(&mut tx.translate, "翻译为英文输出").changed() {
-            *changed = true;
-        }
-
+        ui.add_space(6.0);
         ui.horizontal(|ui| {
-            ui.label("推理线程：");
+            if theme::checkbox(ui, tx.translate, crate::theme::ACCENT).clicked() {
+                tx.translate = !tx.translate;
+                *changed = true;
+            }
+            ui.add_space(2.0);
+            ui.label(
+                egui::RichText::new("翻译为英文输出")
+                    .color(crate::theme::TEXT_PRIMARY)
+                    .size(crate::theme::FONT_BODY),
+            );
+        });
+
+        ui.add_space(6.0);
+        theme::form_row(ui, "推理线程", |ui| {
             let mut n = tx.n_threads;
             if ui.add(egui::Slider::new(&mut n, 1..=16).integer()).changed() {
                 tx.n_threads = n;
@@ -107,24 +116,19 @@ fn render_transcription_group(
     });
 }
 
-fn render_injection_group(
+fn render_injection_card(
     ui: &mut egui::Ui,
     inj: &mut crate::config::InjectionConfig,
     changed: &mut bool,
 ) {
-    ui.group(|ui| {
-        ui.label(egui::RichText::new("文字注入").strong());
-        ui.add_space(4.0);
-
-        ui.horizontal(|ui| {
-            ui.label("方式：");
+    theme::section_card(ui, "文字注入", |ui| {
+        theme::form_row(ui, "注入方式", |ui| {
             let methods = [("clipboard", "剪贴板 (Ctrl+V)"), ("type", "键盘模拟")];
             let current_label = methods
                 .iter()
                 .find(|(c, _)| *c == inj.method)
                 .map(|(_, l)| *l)
                 .unwrap_or("剪贴板 (Ctrl+V)");
-
             egui::ComboBox::from_id_salt("inj_method")
                 .selected_text(current_label)
                 .show_ui(ui, |ui| {
@@ -137,8 +141,8 @@ fn render_injection_group(
                 });
         });
 
-        ui.horizontal(|ui| {
-            ui.label("剪贴板延迟：");
+        ui.add_space(6.0);
+        theme::form_row(ui, "剪贴板延迟", |ui| {
             let mut delay = inj.clipboard_delay_ms;
             if ui
                 .add(egui::Slider::new(&mut delay, 0..=500).suffix(" ms"))
@@ -148,25 +152,17 @@ fn render_injection_group(
                 *changed = true;
             }
         });
-        ui.label(
-            egui::RichText::new("CJK 字符推荐剪贴板方式；慢设备上请调大延迟")
-                .weak()
-                .small(),
-        );
+        theme::helper_text(ui, "中文等 CJK 字符请选剪贴板方式；慢设备可调大延迟。");
     });
 }
 
-fn render_audio_group(
+fn render_audio_card(
     ui: &mut egui::Ui,
     aud: &mut crate::config::AudioConfig,
     changed: &mut bool,
 ) {
-    ui.group(|ui| {
-        ui.label(egui::RichText::new("音频与停顿检测").strong());
-        ui.add_space(4.0);
-
-        ui.horizontal(|ui| {
-            ui.label("静音阈值：");
+    theme::section_card(ui, "音频与停顿检测", |ui| {
+        theme::form_row(ui, "静音阈值", |ui| {
             let mut t = aud.silence_threshold;
             if ui
                 .add(
@@ -179,11 +175,11 @@ fn render_audio_group(
                 aud.silence_threshold = t;
                 *changed = true;
             }
-            ui.label(egui::RichText::new("（越小越灵敏）").weak().small());
         });
+        theme::helper_text(ui, "越小越灵敏，环境嘈杂时调大。");
 
-        ui.horizontal(|ui| {
-            ui.label("停顿长度：");
+        ui.add_space(6.0);
+        theme::form_row(ui, "停顿长度", |ui| {
             let mut f = aud.silence_frames as i32;
             if ui.add(egui::Slider::new(&mut f, 8..=80).integer()).changed() {
                 aud.silence_frames = f as u32;
@@ -192,13 +188,13 @@ fn render_audio_group(
             let approx_secs = (aud.silence_frames as f32) * 1024.0 / 16000.0;
             ui.label(
                 egui::RichText::new(format!("约 {:.1} 秒", approx_secs))
-                    .weak()
-                    .small(),
+                    .color(crate::theme::TEXT_SECONDARY)
+                    .size(crate::theme::FONT_SM),
             );
         });
 
-        ui.horizontal(|ui| {
-            ui.label("最长录音：");
+        ui.add_space(6.0);
+        theme::form_row(ui, "最长录音", |ui| {
             let mut m = aud.max_record_seconds as i32;
             if ui
                 .add(egui::Slider::new(&mut m, 5..=180).integer().suffix(" 秒"))
@@ -211,45 +207,57 @@ fn render_audio_group(
     });
 }
 
-fn render_microphone_group(ui: &mut egui::Ui, state: &mut SettingsState) {
-    ui.group(|ui| {
-        ui.label(egui::RichText::new("麦克风").strong());
+fn render_microphone_card(ui: &mut egui::Ui, state: &SettingsState) {
+    theme::section_card(ui, "麦克风", |ui| {
+        ui.label(
+            egui::RichText::new(format!("可用设备：{} 个", state.audio_devices.len()))
+                .color(crate::theme::TEXT_SECONDARY)
+                .size(crate::theme::FONT_SM),
+        );
         ui.add_space(4.0);
-
-        ui.label(
-            egui::RichText::new(format!("可用设备 ({})", state.audio_devices.len()))
-                .small(),
-        );
         for name in &state.audio_devices {
-            ui.label(
-                egui::RichText::new(format!("  • {}", name))
-                    .small()
-                    .weak(),
-            );
+            ui.horizontal(|ui| {
+                ui.add_space(4.0);
+                ui.label(
+                    egui::RichText::new("•")
+                        .color(crate::theme::TEXT_SECONDARY)
+                        .size(crate::theme::FONT_BODY),
+                );
+                ui.label(
+                    egui::RichText::new(name)
+                        .color(crate::theme::TEXT_PRIMARY)
+                        .size(crate::theme::FONT_BODY),
+                );
+            });
         }
-        ui.label(
-            egui::RichText::new("目前使用系统默认设备，切换设备需在 config.toml 中指定")
-                .weak()
-                .small(),
-        );
+        theme::helper_text(ui, "目前使用系统默认设备，切换设备需在 config.toml 中指定。");
     });
 }
 
-fn render_system_group(ui: &mut egui::Ui, state: &mut SettingsState) {
-    ui.group(|ui| {
-        ui.label(egui::RichText::new("系统").strong());
-        ui.add_space(4.0);
-
+fn render_system_card(ui: &mut egui::Ui, state: &mut SettingsState) {
+    theme::section_card(ui, "系统", |ui| {
         let mut autostart_on = crate::autostart::is_enabled();
         let prev = autostart_on;
+
         ui.horizontal(|ui| {
-            ui.checkbox(&mut autostart_on, "开机自启动");
-            ui.label(
-                egui::RichText::new("（登录后自动启动 xsay）")
-                    .weak()
-                    .small(),
-            );
+            if theme::checkbox(ui, autostart_on, crate::theme::ACCENT).clicked() {
+                autostart_on = !autostart_on;
+            }
+            ui.add_space(2.0);
+            ui.vertical(|ui| {
+                ui.label(
+                    egui::RichText::new("开机自启动")
+                        .color(crate::theme::TEXT_PRIMARY)
+                        .size(crate::theme::FONT_BODY),
+                );
+                ui.label(
+                    egui::RichText::new("登录后自动启动 xsay")
+                        .color(crate::theme::TEXT_SECONDARY)
+                        .size(crate::theme::FONT_SM),
+                );
+            });
         });
+
         if autostart_on != prev {
             let result = if autostart_on {
                 crate::autostart::enable()
@@ -260,16 +268,16 @@ fn render_system_group(ui: &mut egui::Ui, state: &mut SettingsState) {
                 Ok(()) => {
                     state.status_msg = Some((
                         if autostart_on {
-                            "✓ 开机自启动已启用".to_string()
+                            "开机自启动已启用".to_string()
                         } else {
-                            "✓ 开机自启动已关闭".to_string()
+                            "开机自启动已关闭".to_string()
                         },
                         crate::theme::SUCCESS,
                     ));
                 }
                 Err(e) => {
                     state.status_msg = Some((
-                        format!("✗ 自启动设置失败: {}", e),
+                        format!("自启动设置失败：{}", e),
                         crate::theme::DANGER_HOVER,
                     ));
                 }
@@ -278,44 +286,42 @@ fn render_system_group(ui: &mut egui::Ui, state: &mut SettingsState) {
     });
 }
 
-fn render_overlay_group(ui: &mut egui::Ui, state: &mut SettingsState) {
-    ui.group(|ui| {
-        ui.label(egui::RichText::new("浮层").strong());
-        ui.add_space(4.0);
+fn render_overlay_card(ui: &mut egui::Ui, state: &SettingsState) {
+    theme::section_card(ui, "浮层位置", |ui| {
+        let positions: &[(&str, &str, Icon)] = &[
+            ("top-left", "左上角", Icon::Box),
+            ("top-right", "右上角", Icon::Box),
+            ("bottom-left", "左下角", Icon::Box),
+            ("bottom-right", "右下角", Icon::Box),
+            ("center", "居中", Icon::Box),
+        ];
+        let current_code = state.shared_position.lock().clone();
 
-        ui.horizontal(|ui| {
-            ui.label("位置：");
-            let positions: &[(&str, &str)] = &[
-                ("top-right", "右上角"),
-                ("top-left", "左上角"),
-                ("bottom-right", "右下角"),
-                ("bottom-left", "左下角"),
-                ("center", "居中"),
-            ];
-            let current_code = state.shared_position.lock().clone();
-            let current_label = positions
-                .iter()
-                .find(|(c, _)| *c == current_code.as_str())
-                .map(|(_, l)| *l)
-                .unwrap_or("右上角");
-            egui::ComboBox::from_id_salt("overlay_pos")
-                .selected_text(current_label)
-                .show_ui(ui, |ui| {
-                    for (code, label) in positions {
-                        let is_sel = current_code == *code;
-                        if ui.selectable_label(is_sel, *label).clicked() {
-                            *state.shared_position.lock() = code.to_string();
-                            if let Ok(mut cfg) = Config::load() {
-                                cfg.overlay.position = code.to_string();
-                                if let Ok(p) = Config::config_path() {
-                                    if let Ok(t) = toml::to_string_pretty(&cfg) {
-                                        let _ = std::fs::write(p, t);
-                                    }
+        // Render as a 2-column radio grid so each option reads at a glance.
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(20.0, 8.0);
+            for (code, label, _) in positions {
+                let selected = current_code == *code;
+                ui.horizontal(|ui| {
+                    if theme::radio_button(ui, selected, crate::theme::ACCENT).clicked() {
+                        *state.shared_position.lock() = code.to_string();
+                        if let Ok(mut cfg) = Config::load() {
+                            cfg.overlay.position = code.to_string();
+                            if let Ok(p) = Config::config_path() {
+                                if let Ok(t) = toml::to_string_pretty(&cfg) {
+                                    let _ = std::fs::write(p, t);
                                 }
                             }
                         }
                     }
+                    ui.add_space(4.0);
+                    ui.label(
+                        egui::RichText::new(*label)
+                            .color(crate::theme::TEXT_PRIMARY)
+                            .size(crate::theme::FONT_BODY),
+                    );
                 });
+            }
         });
     });
 }
