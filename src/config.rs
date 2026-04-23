@@ -85,8 +85,8 @@ impl Default for Config {
 impl Default for HotkeyConfig {
     fn default() -> Self {
         Self {
-            key: "F9".to_string(),
-            modifiers: vec![],
+            key: "z".to_string(),
+            modifiers: vec!["super".to_string()],
             mode: "hold".to_string(),
         }
     }

@@ -95,7 +95,6 @@ pub fn render(ui: &mut egui::Ui, state: &mut SettingsState) {
         render_current_card(ui, state);
         render_capture_card(ui, state);
         render_mode_card(ui, state);
-        render_modifier_card(ui, state);
         render_save_card(ui, state);
 
         if let Some((msg, color)) = &state.status_msg {
@@ -111,17 +110,22 @@ pub fn render(ui: &mut egui::Ui, state: &mut SettingsState) {
 
 fn render_current_card(ui: &mut egui::Ui, state: &SettingsState) {
     theme::section_card(ui, "当前快捷键", |ui| {
-        let display = if state.hotkey_mods.is_empty() {
-            state.hotkey_key.clone()
-        } else {
-            format!("{} + {}", state.hotkey_mods.join(" + "), state.hotkey_key)
-        };
-        ui.label(
-            egui::RichText::new(&display)
-                .monospace()
-                .size(crate::theme::FONT_HERO)
-                .color(crate::theme::ACCENT),
-        );
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
+            let mut parts: Vec<String> =
+                state.hotkey_mods.iter().map(|m| pretty_mod(m)).collect();
+            parts.push(pretty_key(&state.hotkey_key));
+            for (i, part) in parts.iter().enumerate() {
+                if i > 0 {
+                    ui.label(
+                        egui::RichText::new("+")
+                            .color(crate::theme::TEXT_SECONDARY)
+                            .size(crate::theme::FONT_BODY),
+                    );
+                }
+                key_chip(ui, part);
+            }
+        });
 
         let mode_hint = if state.hotkey_mode == "toggle" {
             "点按切换：按一次开始录音，再按一次结束并输入。停顿 1.5 秒自动识别。"
@@ -130,6 +134,59 @@ fn render_current_card(ui: &mut egui::Ui, state: &SettingsState) {
         };
         theme::helper_text(ui, mode_hint);
     });
+}
+
+/// Single pill rendering one modifier or the primary key. Outlined with
+/// ACCENT, slightly darker interior — matches the Figma "key-cap" look.
+fn key_chip(ui: &mut egui::Ui, text: &str) {
+    let font_id = egui::FontId::monospace(crate::theme::FONT_BODY);
+    let text_size = ui
+        .painter()
+        .layout_no_wrap(text.to_string(), font_id.clone(), crate::theme::ACCENT)
+        .size();
+    let pad_x = 10.0;
+    let pad_y = 5.0;
+    let total = egui::vec2(pad_x * 2.0 + text_size.x, pad_y * 2.0 + text_size.y);
+    let (rect, _) = ui.allocate_exact_size(total, egui::Sense::hover());
+    ui.painter().rect_filled(
+        rect,
+        crate::theme::radius_sm(),
+        crate::theme::BG_CARD_HOVER,
+    );
+    ui.painter().rect_stroke(
+        rect,
+        crate::theme::radius_sm(),
+        egui::Stroke::new(1.0, crate::theme::ACCENT),
+        egui::StrokeKind::Inside,
+    );
+    ui.painter().text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        text,
+        font_id,
+        crate::theme::ACCENT,
+    );
+}
+
+fn pretty_mod(name: &str) -> String {
+    match name {
+        "ctrl" => "Ctrl",
+        "alt" => "Alt",
+        "shift" => "Shift",
+        "super" => "Super",
+        other => other,
+    }
+    .to_string()
+}
+
+fn pretty_key(name: &str) -> String {
+    // Single-character keys display uppercased ("z" → "Z") so they read as
+    // key-cap labels rather than variable names.
+    if name.chars().count() == 1 {
+        name.to_uppercase()
+    } else {
+        name.to_string()
+    }
 }
 
 fn render_capture_card(ui: &mut egui::Ui, state: &mut SettingsState) {
@@ -207,37 +264,6 @@ fn render_mode_row(
                     .color(crate::theme::TEXT_SECONDARY)
                     .size(crate::theme::FONT_SM),
             );
-        });
-    });
-}
-
-fn render_modifier_card(ui: &mut egui::Ui, state: &mut SettingsState) {
-    theme::section_card(ui, "修饰键（可选）", |ui| {
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 14.0;
-            for (key, label) in &[
-                ("ctrl", "Ctrl"),
-                ("alt", "Alt"),
-                ("shift", "Shift"),
-                ("super", "Super"),
-            ] {
-                let checked = state.hotkey_mods.iter().any(|m| m == key);
-                ui.horizontal(|ui| {
-                    if theme::checkbox(ui, checked, crate::theme::ACCENT).clicked() {
-                        if checked {
-                            state.hotkey_mods.retain(|x| x != key);
-                        } else {
-                            state.hotkey_mods.push(key.to_string());
-                        }
-                    }
-                    ui.add_space(2.0);
-                    ui.label(
-                        egui::RichText::new(*label)
-                            .color(crate::theme::TEXT_PRIMARY)
-                            .size(crate::theme::FONT_BODY),
-                    );
-                });
-            }
         });
     });
 }
