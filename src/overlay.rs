@@ -97,19 +97,17 @@ impl eframe::App for XsayOverlay {
 
         ctx.request_repaint_after(Duration::from_millis(33));
 
-        // Target window size for this frame
-        let target_size = match &state {
-            AppState::Idle => egui::vec2(90.0, 30.0),
-            _ => egui::vec2(120.0, 120.0),
-        };
+        // Idle = main viewport hidden entirely (no desktop badge). User opens
+        // the settings window through the tray menu. Recording/Transcribing/
+        // Injecting bring the overlay back as a 120×120 feedback widget.
+        let is_idle = matches!(state, AppState::Idle);
+        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(!is_idle));
+
+        let target_size = egui::vec2(120.0, 120.0);
 
         match &state {
             AppState::Idle => {
-                ctx.send_viewport_cmd(egui::ViewportCommand::MousePassthrough(false));
-                if !self.show_settings {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(target_size));
-                }
-                self.render_idle_badge(ctx);
+                // Nothing to render — viewport is hidden.
             }
             AppState::Recording { .. } => {
                 ctx.send_viewport_cmd(egui::ViewportCommand::MousePassthrough(true));
@@ -131,16 +129,18 @@ impl eframe::App for XsayOverlay {
             }
         }
 
-        // Re-anchor to the configured corner whenever the size changed, the
-        // corner changed (from settings), or we haven't positioned yet.
-        let corner = self.shared_position.lock().clone();
-        if target_size != self.last_positioned_size || corner != self.last_positioned_corner {
-            if let Some(monitor) = ctx.input(|i| i.viewport().monitor_size) {
-                if monitor.x > 0.0 && monitor.y > 0.0 {
-                    let pos = compute_corner_position(monitor, target_size, &corner);
-                    ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(pos));
-                    self.last_positioned_size = target_size;
-                    self.last_positioned_corner = corner;
+        // Re-anchor the feedback widget to the configured corner, only while
+        // visible. Skipped during Idle to save cycles.
+        if !is_idle {
+            let corner = self.shared_position.lock().clone();
+            if target_size != self.last_positioned_size || corner != self.last_positioned_corner {
+                if let Some(monitor) = ctx.input(|i| i.viewport().monitor_size) {
+                    if monitor.x > 0.0 && monitor.y > 0.0 {
+                        let pos = compute_corner_position(monitor, target_size, &corner);
+                        ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(pos));
+                        self.last_positioned_size = target_size;
+                        self.last_positioned_corner = corner;
+                    }
                 }
             }
         }
@@ -154,14 +154,17 @@ impl eframe::App for XsayOverlay {
                 egui::ViewportId::from_hash_of("xsay_settings"),
                 egui::ViewportBuilder::default()
                     .with_title("xsay 设置")
-                    .with_inner_size([620.0, 520.0])
+                    .with_inner_size([640.0, 540.0])
+                    .with_min_inner_size([560.0, 420.0])
                     .with_resizable(true)
-                    .with_always_on_top(),
+                    .with_decorations(false),
                 |ctx, _class| {
                     if ctx.input(|i| i.viewport().close_requested()) {
                         *show_ref = false;
                     }
-                    settings_ui::render(ctx, settings_ref);
+                    if settings_ui::render(ctx, settings_ref) {
+                        *show_ref = false;
+                    }
                 },
             );
         }
@@ -173,33 +176,6 @@ impl eframe::App for XsayOverlay {
 }
 
 impl XsayOverlay {
-    fn render_idle_badge(&mut self, ctx: &egui::Context) {
-        // Match theme.BG_WINDOW with soft transparency so it reads as a floating pill.
-        let bg = egui::Color32::from_rgba_premultiplied(0x1E, 0x1E, 0x22, 200);
-        let frame = egui::Frame::none()
-            .fill(bg)
-            .rounding(crate::theme::radius_lg());
-
-        egui::CentralPanel::default().frame(frame).show(ctx, |ui| {
-            ui.centered_and_justified(|ui| {
-                let btn = ui.add(
-                    egui::Button::new(
-                        egui::RichText::new("⚙ xsay")
-                            .color(crate::theme::TEXT_SECONDARY)
-                            .size(crate::theme::FONT_MD),
-                    )
-                    .frame(false),
-                );
-                if btn.clicked() {
-                    self.show_settings = true;
-                }
-                if btn.hovered() {
-                    ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
-                }
-            });
-        });
-    }
-
     fn render_recording(&self, ctx: &egui::Context) {
         self.render_state_with_mic(
             ctx,
@@ -298,16 +274,18 @@ impl XsayOverlay {
 }
 
 pub fn build_native_options(_config: &crate::config::OverlayConfig) -> eframe::NativeOptions {
-    // Initial position is a conservative top-right estimate; re-anchored
-    // precisely once the compositor reports monitor_size on the first frame.
+    // Start invisible — we go to Idle immediately and only show the window
+    // when the user starts recording. The first update() call flips Visible
+    // based on AppState.
     eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_decorations(false)
             .with_transparent(true)
             .with_always_on_top()
-            .with_mouse_passthrough(false) // starts as badge (clickable)
+            .with_mouse_passthrough(true) // pure feedback widget; no clicks
             .with_resizable(false)
-            .with_inner_size([90.0, 30.0])
+            .with_visible(false)
+            .with_inner_size([120.0, 120.0])
             .with_position(egui::pos2(1200.0, 20.0)),
         ..Default::default()
     }

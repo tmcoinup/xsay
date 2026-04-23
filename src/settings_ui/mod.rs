@@ -114,7 +114,8 @@ impl SettingsState {
 }
 
 /// Entry point called each frame by the settings viewport in `overlay.rs`.
-pub fn render(ctx: &egui::Context, state: &mut SettingsState) {
+/// Returns `true` when the user clicked the custom close button.
+pub fn render(ctx: &egui::Context, state: &mut SettingsState) -> bool {
     // Settings runs in its own viewport, which has its own Context/fonts.
     // Install CJK font once so Chinese labels don't render as tofu.
     if !state.fonts_installed {
@@ -136,17 +137,36 @@ pub fn render(ctx: &egui::Context, state: &mut SettingsState) {
     // Key capture runs at the top level so it works regardless of active tab.
     hotkey_tab::handle_key_capture(ctx, state);
 
-    // Fill the outer viewport with the window bg so there's no default
-    // light-grey gap around the panel.
+    let mut close_requested = false;
+
+    // Custom title bar in its own top panel — replaces the OS decoration
+    // (which we disable via with_decorations(false)) so we can:
+    //   - render "xsay 设置" using the injected CJK font
+    //   - match the dark theme instead of a white Gnome/Yaru bar
+    //   - draw macOS-style traffic lights to match the Figma reference
+    egui::TopBottomPanel::top("xsay_titlebar")
+        .exact_height(36.0)
+        .frame(
+            egui::Frame::none()
+                .fill(crate::theme::BG_PANEL)
+                .inner_margin(egui::Margin::symmetric(12.0, 0.0)),
+        )
+        .show(ctx, |ui| {
+            if render_title_bar(ui, ctx) {
+                close_requested = true;
+            }
+        });
+
+    // Content panel: BG_WINDOW
     let panel_frame = egui::Frame::none()
         .fill(crate::theme::BG_WINDOW)
-        .inner_margin(egui::Margin::symmetric(12.0, 10.0));
+        .inner_margin(egui::Margin::symmetric(16.0, 12.0));
 
     egui::CentralPanel::default()
         .frame(panel_frame)
         .show(ctx, |ui| {
             render_tab_bar(ui, state);
-            ui.add_space(10.0);
+            ui.add_space(12.0);
 
             match state.tab {
                 Tab::Model => model_tab::render(ui, state),
@@ -155,6 +175,76 @@ pub fn render(ctx: &egui::Context, state: &mut SettingsState) {
                 Tab::History => history_tab::render(ui, state),
             }
         });
+
+    close_requested
+}
+
+/// Custom window title bar. macOS-style traffic lights on the left (red =
+/// close, yellow/green decorative), "xsay 设置" centered, empty space on the
+/// right. The whole bar is a drag surface.
+///
+/// Returns true if the red close button was clicked.
+fn render_title_bar(ui: &mut egui::Ui, ctx: &egui::Context) -> bool {
+    let bar_rect = ui.max_rect();
+    let mut close_clicked = false;
+
+    // Whole-bar drag region — any non-interactive click on the bar starts
+    // moving the window.
+    let bar_response = ui.interact(
+        bar_rect,
+        egui::Id::new("titlebar_drag"),
+        egui::Sense::click_and_drag(),
+    );
+    if bar_response.drag_started_by(egui::PointerButton::Primary) {
+        ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+    }
+
+    // Centered title
+    ui.painter().text(
+        bar_rect.center(),
+        egui::Align2::CENTER_CENTER,
+        "xsay 设置",
+        egui::FontId::proportional(crate::theme::FONT_BODY),
+        crate::theme::TEXT_PRIMARY,
+    );
+
+    // Three macOS traffic-light dots on the left, 12px diameter, 8px gap.
+    let dot_y = bar_rect.center().y;
+    let dot_r = 6.0;
+    let dot_start_x = bar_rect.min.x + 6.0;
+    let colors = [
+        egui::Color32::from_rgb(0xFF, 0x5F, 0x57), // red (close)
+        egui::Color32::from_rgb(0xFE, 0xBC, 0x2E), // yellow
+        egui::Color32::from_rgb(0x28, 0xC8, 0x40), // green
+    ];
+    for (i, color) in colors.iter().enumerate() {
+        let center = egui::pos2(dot_start_x + dot_r + i as f32 * (dot_r * 2.0 + 4.0), dot_y);
+        let rect = egui::Rect::from_center_size(center, egui::vec2(dot_r * 2.0, dot_r * 2.0));
+        let resp = ui.interact(
+            rect,
+            egui::Id::new(("titlebar_dot", i)),
+            egui::Sense::click(),
+        );
+        let hovered = resp.hovered();
+        let fill = if hovered {
+            color.linear_multiply(1.3)
+        } else {
+            *color
+        };
+        ui.painter().circle_filled(center, dot_r, fill);
+        if hovered {
+            ui.painter().circle_stroke(
+                center,
+                dot_r,
+                egui::Stroke::new(0.8, egui::Color32::from_rgba_premultiplied(0, 0, 0, 120)),
+            );
+        }
+        if i == 0 && resp.clicked() {
+            close_clicked = true;
+        }
+    }
+
+    close_clicked
 }
 
 /// Custom tab bar: active tab filled with theme::ACCENT, others are plain
@@ -162,6 +252,7 @@ pub fn render(ctx: &egui::Context, state: &mut SettingsState) {
 /// (which uses a subtle grey fill that doesn't match the design).
 fn render_tab_bar(ui: &mut egui::Ui, state: &mut SettingsState) {
     ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
         for (tab, label) in [
             (Tab::Model, "🤖  模型"),
             (Tab::Hotkey, "⌨  快捷键"),
@@ -177,11 +268,11 @@ fn render_tab_bar(ui: &mut egui::Ui, state: &mut SettingsState) {
 
             let text = egui::RichText::new(label)
                 .color(fg)
-                .size(crate::theme::FONT_HEADING);
+                .size(crate::theme::FONT_BODY);
             let btn = egui::Button::new(text)
                 .fill(bg)
                 .rounding(crate::theme::radius_md())
-                .min_size(egui::vec2(0.0, 28.0));
+                .min_size(egui::vec2(0.0, 30.0));
 
             if ui.add(btn).clicked() {
                 state.tab = tab;

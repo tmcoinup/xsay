@@ -67,3 +67,48 @@ pub const FONT_BODY: f32 = 13.0;
 pub const FONT_HEADING: f32 = 14.0;
 pub const FONT_HERO: f32 = 20.0;
 pub const FONT_H1: f32 = 28.0;
+
+// ---------------------------------------------------------------------------
+// Small UI primitives matching the Figma reference
+// ---------------------------------------------------------------------------
+
+use eframe::egui::{self, Response, Ui};
+
+/// Chip-style label with rounded background — e.g. "✓ 当前使用" / "↑ 有更新".
+pub fn chip(ui: &mut Ui, text: &str, fg: egui::Color32, bg: egui::Color32) -> Response {
+    let frame = egui::Frame::none()
+        .fill(bg)
+        .rounding(radius_sm())
+        .inner_margin(egui::Margin::symmetric(6.0, 2.0));
+
+    frame
+        .show(ui, |ui| {
+            ui.label(egui::RichText::new(text).color(fg).size(FONT_SM));
+        })
+        .response
+}
+
+/// Primary accent button (filled blue with white text), small size.
+pub fn primary_button(ui: &mut Ui, text: &str) -> Response {
+    let btn = egui::Button::new(
+        egui::RichText::new(text)
+            .color(egui::Color32::WHITE)
+            .size(FONT_MD),
+    )
+    .fill(ACCENT)
+    .rounding(radius_sm())
+    .min_size(egui::vec2(0.0, 24.0));
+    ui.add(btn)
+}
+
+/// Subtle button: transparent bg, border-less, grey text. Used for destructive
+/// secondary actions (删除, 取消).
+pub fn ghost_button(ui: &mut Ui, text: &str, color: egui::Color32) -> Response {
+    let btn = egui::Button::new(
+        egui::RichText::new(text).color(color).size(FONT_MD),
+    )
+    .fill(BG_CARD_HOVER)
+    .rounding(radius_sm())
+    .min_size(egui::vec2(0.0, 24.0));
+    ui.add(btn)
+}

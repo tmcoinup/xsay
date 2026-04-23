@@ -181,26 +181,29 @@ fn render_header_row(
         ui.label(egui::RichText::new(model.desc).weak().small());
 
         if is_current {
-            ui.label(
-                egui::RichText::new(" ✓ 当前使用 ")
-                    .color(crate::theme::CURRENT)
-                    .small(),
+            crate::theme::chip(
+                ui,
+                "✓ 当前使用",
+                egui::Color32::WHITE,
+                crate::theme::CURRENT,
             );
         }
 
         if let Some(remote_size) = remote {
             if is_downloaded {
                 if remote_size != local_size {
-                    ui.label(
-                        egui::RichText::new("↑ 有更新")
-                            .color(crate::theme::WARNING)
-                            .small(),
+                    crate::theme::chip(
+                        ui,
+                        "↑ 有更新",
+                        egui::Color32::BLACK,
+                        crate::theme::WARNING,
                     );
                 } else {
-                    ui.label(
-                        egui::RichText::new("✓ 最新")
-                            .color(crate::theme::TEXT_SECONDARY)
-                            .small(),
+                    crate::theme::chip(
+                        ui,
+                        "✓ 最新",
+                        crate::theme::TEXT_SECONDARY,
+                        crate::theme::BG_CARD_HOVER,
                     );
                 }
             }
@@ -269,18 +272,21 @@ fn render_action_row(
     dl_state_snap: &Option<DlState>,
 ) {
     ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 6.0;
         if is_this_dl {
             let paused = matches!(dl_state_snap, Some(DlState::Paused));
             if paused {
-                if ui.small_button("▶ 继续").clicked() {
+                if crate::theme::primary_button(ui, "▶ 继续").clicked() {
                     start_model_download(model, state);
                 }
-            } else if ui.small_button("⏸ 暂停").clicked() {
+            } else if crate::theme::ghost_button(ui, "⏸ 暂停", crate::theme::TEXT_PRIMARY)
+                .clicked()
+            {
                 if let Some(dl) = &state.active_download {
                     let _ = dl.cmd_tx.send(DownloadCmd::Pause);
                 }
             }
-            if ui.small_button("✕ 取消").clicked() {
+            if crate::theme::ghost_button(ui, "✕ 取消", crate::theme::DANGER_HOVER).clicked() {
                 if let Some(dl) = &state.active_download {
                     let _ = dl.cmd_tx.send(DownloadCmd::Cancel);
                 }
@@ -293,7 +299,7 @@ fn render_action_row(
                         .color(crate::theme::DANGER)
                         .small(),
                 );
-                if ui.small_button("重试").clicked() {
+                if crate::theme::primary_button(ui, "重试").clicked() {
                     state.active_download = None;
                     start_model_download(model, state);
                 }
@@ -302,22 +308,29 @@ fn render_action_row(
             if !is_downloaded {
                 let btn_label = if has_partial { "▶ 继续下载" } else { "⬇ 下载" };
                 let enabled = state.active_download.is_none();
-                if ui
-                    .add_enabled(enabled, egui::Button::new(btn_label).small())
-                    .clicked()
-                {
+                let resp = if enabled {
+                    crate::theme::primary_button(ui, btn_label)
+                } else {
+                    crate::theme::ghost_button(ui, btn_label, crate::theme::TEXT_DISABLED)
+                };
+                if enabled && resp.clicked() {
                     start_model_download(model, state);
                 }
-                if has_partial && ui.small_button("✕ 删除进度").clicked() {
+                if has_partial
+                    && crate::theme::ghost_button(ui, "✕ 删除进度", crate::theme::DANGER_HOVER)
+                        .clicked()
+                {
                     let _ = std::fs::remove_file(partial_path);
                 }
             }
 
             if is_downloaded && !is_current {
-                if ui.small_button("✓ 切换使用").clicked() {
+                if crate::theme::primary_button(ui, "✓ 切换使用").clicked() {
                     switch_model(model, local_path, state);
                 }
-                if ui.small_button("🗑 删除").clicked() {
+                if crate::theme::ghost_button(ui, "🗑 删除", crate::theme::DANGER_HOVER)
+                    .clicked()
+                {
                     let _ = std::fs::remove_file(local_path);
                 }
             }
