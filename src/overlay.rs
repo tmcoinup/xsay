@@ -19,6 +19,12 @@ pub struct XsayOverlay {
     // Settings window
     show_settings: bool,
     settings: SettingsState,
+
+    // Viewport positioning — configured corner (shared with settings UI so
+    // changes re-anchor immediately) + last applied size to detect changes.
+    shared_position: Arc<Mutex<String>>,
+    last_positioned_size: egui::Vec2,
+    last_positioned_corner: String,
 }
 
 impl XsayOverlay {
@@ -29,6 +35,7 @@ impl XsayOverlay {
         shared_audio: Arc<Mutex<AudioConfig>>,
         shared_inject: Arc<Mutex<InjectionConfig>>,
         shared_transcription: Arc<Mutex<TranscriptionConfig>>,
+        shared_position: Arc<Mutex<String>>,
         capture_active: Arc<AtomicBool>,
         model_reload_tx: crossbeam_channel::Sender<std::path::PathBuf>,
     ) -> Self {
@@ -39,6 +46,7 @@ impl XsayOverlay {
             shared_audio,
             shared_inject,
             shared_transcription,
+            Arc::clone(&shared_position),
             capture_active,
             model_reload_tx,
         );
@@ -48,7 +56,28 @@ impl XsayOverlay {
             dots_phase: 0.0,
             show_settings: false,
             settings,
+            shared_position,
+            last_positioned_size: egui::vec2(0.0, 0.0),
+            last_positioned_corner: String::new(),
         }
+    }
+}
+
+fn compute_corner_position(monitor: egui::Vec2, window: egui::Vec2, corner: &str) -> egui::Pos2 {
+    let margin = 20.0;
+    match corner {
+        "top-left" => egui::pos2(margin, margin),
+        "bottom-left" => egui::pos2(margin, monitor.y - window.y - margin),
+        "bottom-right" => egui::pos2(
+            monitor.x - window.x - margin,
+            monitor.y - window.y - margin,
+        ),
+        "center" => egui::pos2(
+            (monitor.x - window.x) * 0.5,
+            (monitor.y - window.y) * 0.5,
+        ),
+        // "top-right" and fallback
+        _ => egui::pos2(monitor.x - window.x - margin, margin),
     }
 }
 
@@ -68,31 +97,50 @@ impl eframe::App for XsayOverlay {
 
         ctx.request_repaint_after(Duration::from_millis(33));
 
+        // Target window size for this frame
+        let target_size = match &state {
+            AppState::Idle => egui::vec2(90.0, 30.0),
+            _ => egui::vec2(120.0, 120.0),
+        };
+
         match &state {
             AppState::Idle => {
-                // Small badge, clickable, not passthrough
                 ctx.send_viewport_cmd(egui::ViewportCommand::MousePassthrough(false));
                 if !self.show_settings {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(90.0, 30.0)));
+                    ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(target_size));
                 }
                 self.render_idle_badge(ctx);
             }
             AppState::Recording { .. } => {
                 ctx.send_viewport_cmd(egui::ViewportCommand::MousePassthrough(true));
-                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(120.0, 120.0)));
+                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(target_size));
                 self.animation_phase += 0.08;
                 self.render_recording(ctx);
             }
             AppState::Transcribing => {
                 ctx.send_viewport_cmd(egui::ViewportCommand::MousePassthrough(true));
-                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(120.0, 120.0)));
+                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(target_size));
                 self.dots_phase += 0.05;
                 self.render_status(ctx, "识别中", egui::Color32::from_rgb(60, 120, 220));
             }
             AppState::Injecting => {
                 ctx.send_viewport_cmd(egui::ViewportCommand::MousePassthrough(true));
-                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(120.0, 120.0)));
+                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(target_size));
                 self.render_status(ctx, "输入中", egui::Color32::from_rgb(40, 160, 80));
+            }
+        }
+
+        // Re-anchor to the configured corner whenever the size changed, the
+        // corner changed (from settings), or we haven't positioned yet.
+        let corner = self.shared_position.lock().clone();
+        if target_size != self.last_positioned_size || corner != self.last_positioned_corner {
+            if let Some(monitor) = ctx.input(|i| i.viewport().monitor_size) {
+                if monitor.x > 0.0 && monitor.y > 0.0 {
+                    let pos = compute_corner_position(monitor, target_size, &corner);
+                    ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(pos));
+                    self.last_positioned_size = target_size;
+                    self.last_positioned_corner = corner;
+                }
             }
         }
 
@@ -220,15 +268,9 @@ impl XsayOverlay {
     }
 }
 
-pub fn build_native_options(config: &crate::config::OverlayConfig) -> eframe::NativeOptions {
-    let position = match config.position.as_str() {
-        "top-left" => egui::pos2(20.0, 20.0),
-        "bottom-left" => egui::pos2(20.0, 900.0),
-        "bottom-right" => egui::pos2(1780.0, 900.0),
-        "center" => egui::pos2(900.0, 450.0),
-        _ => egui::pos2(1780.0, 20.0),
-    };
-
+pub fn build_native_options(_config: &crate::config::OverlayConfig) -> eframe::NativeOptions {
+    // Initial position is a conservative top-right estimate; re-anchored
+    // precisely once the compositor reports monitor_size on the first frame.
     eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_decorations(false)
@@ -237,7 +279,7 @@ pub fn build_native_options(config: &crate::config::OverlayConfig) -> eframe::Na
             .with_mouse_passthrough(false) // starts as badge (clickable)
             .with_resizable(false)
             .with_inner_size([90.0, 30.0])
-            .with_position(position),
+            .with_position(egui::pos2(1200.0, 20.0)),
         ..Default::default()
     }
 }

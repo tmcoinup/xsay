@@ -82,6 +82,7 @@ fn main() -> anyhow::Result<()> {
     let shared_audio = Arc::new(Mutex::new(cfg.audio.clone()));
     let shared_inject = Arc::new(Mutex::new(cfg.injection.clone()));
     let shared_transcription = Arc::new(Mutex::new(cfg.transcription.clone()));
+    let shared_position = Arc::new(Mutex::new(cfg.overlay.position.clone()));
     let capture_active = Arc::new(AtomicBool::new(false));
 
     // Create all channels
@@ -164,6 +165,7 @@ fn main() -> anyhow::Result<()> {
                 shared_audio,
                 shared_inject,
                 shared_transcription,
+                shared_position,
                 capture_active,
                 model_reload_tx,
             )))

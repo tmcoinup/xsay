@@ -96,6 +96,7 @@ pub struct SettingsState {
     pub shared_audio: Arc<Mutex<AudioConfig>>,
     pub shared_inject: Arc<Mutex<InjectionConfig>>,
     pub shared_transcription: Arc<Mutex<TranscriptionConfig>>,
+    pub shared_position: Arc<Mutex<String>>,
     pub capture_active: Arc<AtomicBool>,
 
     // General tab — list of audio device names (read-only info for now)
@@ -117,6 +118,7 @@ impl SettingsState {
         shared_audio: Arc<Mutex<AudioConfig>>,
         shared_inject: Arc<Mutex<InjectionConfig>>,
         shared_transcription: Arc<Mutex<TranscriptionConfig>>,
+        shared_position: Arc<Mutex<String>>,
         capture_active: Arc<AtomicBool>,
         model_reload_tx: crossbeam_channel::Sender<PathBuf>,
     ) -> Self {
@@ -138,6 +140,7 @@ impl SettingsState {
             shared_audio,
             shared_inject,
             shared_transcription,
+            shared_position,
             capture_active,
             audio_devices: crate::audio::input_device_names(),
             cache_dir,
@@ -999,19 +1002,19 @@ fn render_general_tab(ui: &mut egui::Ui, state: &mut SettingsState) {
                     ("bottom-left", "左下角"),
                     ("center", "居中"),
                 ];
-                let mut pos_cfg = Config::load().ok().map(|c| c.overlay.position);
-                let current = pos_cfg
-                    .as_ref()
-                    .and_then(|p| {
-                        positions.iter().find(|(c, _)| *c == p.as_str()).map(|(_, l)| *l)
-                    })
+                let current_code = state.shared_position.lock().clone();
+                let current_label = positions
+                    .iter()
+                    .find(|(c, _)| *c == current_code.as_str())
+                    .map(|(_, l)| *l)
                     .unwrap_or("右上角");
                 egui::ComboBox::from_id_salt("overlay_pos")
-                    .selected_text(current)
+                    .selected_text(current_label)
                     .show_ui(ui, |ui| {
                         for (code, label) in positions {
-                            let is_sel = pos_cfg.as_deref() == Some(*code);
+                            let is_sel = current_code == *code;
                             if ui.selectable_label(is_sel, *label).clicked() {
+                                *state.shared_position.lock() = code.to_string();
                                 if let Ok(mut cfg) = Config::load() {
                                     cfg.overlay.position = code.to_string();
                                     if let Ok(p) = Config::config_path() {
@@ -1020,15 +1023,9 @@ fn render_general_tab(ui: &mut egui::Ui, state: &mut SettingsState) {
                                         }
                                     }
                                 }
-                                pos_cfg = Some(code.to_string());
                             }
                         }
                     });
-                ui.label(
-                    egui::RichText::new("（重启后生效）")
-                        .color(egui::Color32::from_rgb(255, 200, 120))
-                        .small(),
-                );
             });
         });
 
