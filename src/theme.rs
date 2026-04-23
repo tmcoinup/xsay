@@ -239,32 +239,7 @@ pub fn draw_icon(painter: &Painter, rect: Rect, icon: Icon, color: egui::Color32
             painter.add(egui::Shape::convex_polygon(pts, color, Stroke::NONE));
         }
         Icon::Refresh => {
-            let radius = w * 0.32;
-            let start_angle = -PI * 0.2;
-            let end_angle = PI * 1.3;
-            let steps = 20;
-            let mut pts = Vec::with_capacity(steps + 1);
-            for i in 0..=steps {
-                let t = i as f32 / steps as f32;
-                let a = start_angle + (end_angle - start_angle) * t;
-                pts.push(c + egui::vec2(a.cos() * radius, a.sin() * radius));
-            }
-            for pair in pts.windows(2) {
-                painter.line_segment([pair[0], pair[1]], stroke);
-            }
-            let last = *pts.last().unwrap();
-            let prev = pts[pts.len() - 2];
-            let dir = (last - prev).normalized();
-            let perp = egui::vec2(-dir.y, dir.x);
-            let asz = w * 0.18;
-            painter.line_segment(
-                [last, last - dir * asz + perp * asz * 0.5],
-                stroke,
-            );
-            painter.line_segment(
-                [last, last - dir * asz - perp * asz * 0.5],
-                stroke,
-            );
+            draw_refresh_arc(painter, rect, color, 0.0);
         }
         Icon::Up => {
             painter.line_segment(
@@ -385,6 +360,33 @@ pub fn draw_icon(painter: &Painter, rect: Rect, icon: Icon, color: egui::Color32
     }
 }
 
+/// Circular arrow used for the "refresh" icon, with an angle offset so the
+/// same drawing can be animated by passing in a time-dependent rotation.
+fn draw_refresh_arc(painter: &Painter, rect: Rect, color: egui::Color32, rotation: f32) {
+    let stroke = Stroke::new(1.5, color);
+    let c = rect.center();
+    let radius = rect.width() * 0.32;
+    let start_angle = -PI * 0.2 + rotation;
+    let end_angle = PI * 1.3 + rotation;
+    let steps = 20;
+    let mut pts = Vec::with_capacity(steps + 1);
+    for i in 0..=steps {
+        let t = i as f32 / steps as f32;
+        let a = start_angle + (end_angle - start_angle) * t;
+        pts.push(c + egui::vec2(a.cos() * radius, a.sin() * radius));
+    }
+    for pair in pts.windows(2) {
+        painter.line_segment([pair[0], pair[1]], stroke);
+    }
+    let last = *pts.last().unwrap();
+    let prev = pts[pts.len() - 2];
+    let dir = (last - prev).normalized();
+    let perp = egui::vec2(-dir.y, dir.x);
+    let asz = rect.width() * 0.18;
+    painter.line_segment([last, last - dir * asz + perp * asz * 0.5], stroke);
+    painter.line_segment([last, last - dir * asz - perp * asz * 0.5], stroke);
+}
+
 fn brighten(c: egui::Color32, factor: f32) -> egui::Color32 {
     let [r, g, b, a] = c.to_array();
     let b_fn = |v: u8| ((v as f32 * factor).min(255.0)) as u8;
@@ -449,6 +451,78 @@ pub fn icon_link_button(ui: &mut Ui, icon: Icon, text: &str, color: egui::Color3
         font_id,
         col,
     );
+    response
+}
+
+/// Outlined pill button — BG_CARD fill, thin border, icon + text inside.
+/// Used for footer actions like "检查所有模型更新". When `spinning` is true,
+/// the refresh icon rotates continuously and the frame asks egui for a
+/// repaint so the animation stays smooth.
+pub fn outlined_button(
+    ui: &mut Ui,
+    icon: Icon,
+    text: &str,
+    color: egui::Color32,
+    spinning: bool,
+) -> Response {
+    let icon_size = 14.0;
+    let gap = 6.0;
+    let pad_x = 14.0;
+    let pad_y = 7.0;
+
+    let font_id = egui::FontId::proportional(FONT_BODY);
+    let text_size = ui
+        .painter()
+        .layout_no_wrap(text.to_string(), font_id.clone(), color)
+        .size();
+
+    let total = egui::vec2(
+        pad_x * 2.0 + icon_size + gap + text_size.x,
+        pad_y * 2.0 + icon_size.max(text_size.y),
+    );
+    let (rect, response) = ui.allocate_exact_size(total, egui::Sense::click());
+
+    let hovered = response.hovered();
+    let bg = if hovered { BG_CARD_HOVER } else { BG_CARD };
+    let border = if hovered {
+        TEXT_SECONDARY
+    } else {
+        TEXT_DISABLED
+    };
+    let text_color = if hovered { brighten(color, 1.15) } else { color };
+
+    ui.painter().rect_filled(rect, radius_md(), bg);
+    ui.painter().rect_stroke(
+        rect,
+        radius_md(),
+        Stroke::new(1.0, border),
+        StrokeKind::Inside,
+    );
+
+    let icon_rect = Rect::from_min_size(
+        egui::pos2(rect.min.x + pad_x, rect.center().y - icon_size / 2.0),
+        egui::vec2(icon_size, icon_size),
+    );
+
+    if spinning && matches!(icon, Icon::Refresh) {
+        // Drive the animation from the egui clock so timing is independent
+        // of our frame rate, and nudge egui to keep drawing.
+        let time = ui.ctx().input(|i| i.time) as f32;
+        let rotation = time * 2.0 * PI; // one full turn per second
+        draw_refresh_arc(ui.painter(), icon_rect, text_color, rotation);
+        ui.ctx().request_repaint();
+    } else {
+        draw_icon(ui.painter(), icon_rect, icon, text_color);
+    }
+
+    ui.painter().text(
+        egui::pos2(rect.min.x + pad_x + icon_size + gap, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        text,
+        font_id,
+        text_color,
+    );
+
     response
 }
 

@@ -61,13 +61,15 @@ pub fn render(ui: &mut egui::Ui, state: &mut SettingsState) {
 
         ui.horizontal(|ui| {
             let checking = state.checking_updates;
-            let label = if checking { "检查中..." } else { "检查所有模型更新" };
+            let label = if checking { "检查中…" } else { "检查所有模型更新" };
             let color = if checking {
-                crate::theme::TEXT_DISABLED
+                crate::theme::TEXT_SECONDARY
             } else {
-                crate::theme::ACCENT
+                crate::theme::TEXT_PRIMARY
             };
-            if theme::icon_link_button(ui, Icon::Refresh, label, color).clicked() && !checking {
+            if theme::outlined_button(ui, Icon::Refresh, label, color, checking).clicked()
+                && !checking
+            {
                 check_all_updates(state);
             }
         });
