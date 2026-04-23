@@ -2,7 +2,11 @@
 //! `965fafa0c4522141713b07c7f5f25d79349fedc9`). Keep this the single
 //! source of truth — do not hard-code colors/radii in rendering code.
 
-use eframe::egui::{Color32, Rounding};
+use eframe::egui::{Color32, CornerRadius};
+
+// `Rounding` was renamed to `CornerRadius` in egui 0.34. Keep a local alias
+// so helper names (`radius_*()`) still read naturally.
+pub type Rounding = CornerRadius;
 
 /// Deepest page background (behind the settings window)
 pub const BG_DEEPEST: Color32 = Color32::from_rgb(0x0F, 0x0F, 0x12);
@@ -36,26 +40,26 @@ pub const WARNING: Color32 = Color32::from_rgb(0xFF, 0xB4, 0x3C);
 
 // --- Corner radii ---
 
-pub fn radius_xs() -> Rounding {
-    Rounding::same(2.0)
+pub fn radius_xs() -> CornerRadius {
+    CornerRadius::same(2)
 }
-pub fn radius_sm() -> Rounding {
-    Rounding::same(4.0)
+pub fn radius_sm() -> CornerRadius {
+    CornerRadius::same(4)
 }
-pub fn radius_md() -> Rounding {
-    Rounding::same(6.0)
+pub fn radius_md() -> CornerRadius {
+    CornerRadius::same(6)
 }
 /// Cards, frames
-pub fn radius_lg() -> Rounding {
-    Rounding::same(8.0)
+pub fn radius_lg() -> CornerRadius {
+    CornerRadius::same(8)
 }
 /// Windows
-pub fn radius_xl() -> Rounding {
-    Rounding::same(10.0)
+pub fn radius_xl() -> CornerRadius {
+    CornerRadius::same(10)
 }
 /// Hero elements
-pub fn radius_xxl() -> Rounding {
-    Rounding::same(12.0)
+pub fn radius_xxl() -> CornerRadius {
+    CornerRadius::same(12)
 }
 
 // --- Font sizes ---
@@ -72,15 +76,15 @@ pub const FONT_H1: f32 = 28.0;
 // Small UI primitives matching the Figma reference
 // ---------------------------------------------------------------------------
 
-use eframe::egui::{self, Painter, Rect, Response, Stroke, Ui};
+use eframe::egui::{self, Painter, Rect, Response, Stroke, StrokeKind, Ui};
 use std::f32::consts::PI;
 
 /// Chip-style label with rounded background — e.g. "✓ 当前使用" / "↑ 有更新".
 pub fn chip(ui: &mut Ui, text: &str, fg: egui::Color32, bg: egui::Color32) -> Response {
-    let frame = egui::Frame::none()
+    let frame = egui::Frame::new()
         .fill(bg)
-        .rounding(radius_sm())
-        .inner_margin(egui::Margin::symmetric(6.0, 2.0));
+        .corner_radius(radius_sm())
+        .inner_margin(egui::Margin::symmetric(6, 2));
 
     frame
         .show(ui, |ui| {
@@ -214,7 +218,7 @@ pub fn draw_icon(painter: &Painter, rect: Rect, icon: Icon, color: egui::Color32
                     egui::pos2(c.x - gap / 2.0 - bar_w, y_top),
                     egui::vec2(bar_w, bar_h),
                 ),
-                egui::Rounding::same(1.0),
+                CornerRadius::same(1),
                 color,
             );
             painter.rect_filled(
@@ -222,7 +226,7 @@ pub fn draw_icon(painter: &Painter, rect: Rect, icon: Icon, color: egui::Color32
                     egui::pos2(c.x + gap / 2.0, y_top),
                     egui::vec2(bar_w, bar_h),
                 ),
-                egui::Rounding::same(1.0),
+                CornerRadius::same(1),
                 color,
             );
         }
@@ -302,7 +306,12 @@ pub fn draw_icon(painter: &Painter, rect: Rect, icon: Icon, color: egui::Color32
             painter.circle_filled(egui::pos2(c.x, r.max.y - h * 0.22), 1.2, color);
         }
         Icon::Box => {
-            painter.rect_stroke(r.shrink(w * 0.12), egui::Rounding::same(1.5), stroke);
+            painter.rect_stroke(
+                r.shrink(w * 0.12),
+                CornerRadius::same(1),
+                stroke,
+                StrokeKind::Middle,
+            );
             painter.line_segment(
                 [
                     egui::pos2(r.min.x + w * 0.12, c.y),
@@ -317,8 +326,9 @@ pub fn draw_icon(painter: &Painter, rect: Rect, icon: Icon, color: egui::Color32
                     egui::pos2(r.min.x + w * 0.05, r.min.y + h * 0.25),
                     egui::pos2(r.max.x - w * 0.05, r.max.y - h * 0.15),
                 ),
-                egui::Rounding::same(1.5),
+                CornerRadius::same(1),
                 stroke,
+                StrokeKind::Middle,
             );
             let row1_y = r.min.y + h * 0.44;
             let row2_y = r.min.y + h * 0.60;
@@ -357,8 +367,9 @@ pub fn draw_icon(painter: &Painter, rect: Rect, icon: Icon, color: egui::Color32
                     egui::pos2(r.min.x + w * 0.22, r.min.y + h * 0.08),
                     egui::pos2(r.max.x - w * 0.22, r.max.y - h * 0.08),
                 ),
-                egui::Rounding::same(1.5),
+                CornerRadius::same(1),
                 stroke,
+                StrokeKind::Middle,
             );
             for i in 0..3 {
                 let y = r.min.y + h * (0.3 + i as f32 * 0.18);
@@ -383,10 +394,10 @@ fn brighten(c: egui::Color32, factor: f32) -> egui::Color32 {
 /// Link-style text button — no fill, no border. Color brightens on hover.
 pub fn link_button(ui: &mut Ui, text: &str, color: egui::Color32) -> Response {
     let font_id = egui::FontId::proportional(FONT_MD);
-    let text_size = ui.fonts(|f| {
-        f.layout_no_wrap(text.to_string(), font_id.clone(), color)
-            .size()
-    });
+    let text_size = ui
+        .painter()
+        .layout_no_wrap(text.to_string(), font_id.clone(), color)
+        .size();
     let (rect, response) = ui.allocate_exact_size(
         egui::vec2(text_size.x + 4.0, text_size.y.max(20.0)),
         egui::Sense::click(),
@@ -412,10 +423,10 @@ pub fn icon_link_button(ui: &mut Ui, icon: Icon, text: &str, color: egui::Color3
     let icon_size = 14.0;
     let gap = 4.0;
     let font_id = egui::FontId::proportional(FONT_MD);
-    let text_size = ui.fonts(|f| {
-        f.layout_no_wrap(text.to_string(), font_id.clone(), color)
-            .size()
-    });
+    let text_size = ui
+        .painter()
+        .layout_no_wrap(text.to_string(), font_id.clone(), color)
+        .size();
     let total = egui::vec2(
         icon_size + gap + text_size.x + 4.0,
         icon_size.max(text_size.y).max(20.0),

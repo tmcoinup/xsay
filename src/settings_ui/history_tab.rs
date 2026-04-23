@@ -45,10 +45,10 @@ pub fn render(ui: &mut egui::Ui, state: &mut SettingsState) {
         ui.spacing_mut().item_spacing.y = 4.0;
 
         for entry in &entries {
-            egui::Frame::none()
+            egui::Frame::new()
                 .fill(crate::theme::BG_CARD)
-                .inner_margin(egui::Margin::symmetric(12.0, 10.0))
-                .rounding(crate::theme::radius_lg())
+                .inner_margin(egui::Margin::symmetric(12, 10))
+                .corner_radius(crate::theme::radius_lg())
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
                         ui.label(
@@ -63,9 +63,9 @@ pub fn render(ui: &mut egui::Ui, state: &mut SettingsState) {
                             egui::Layout::right_to_left(egui::Align::Center),
                             |ui| {
                                 if ui.small_button("📋 复制").clicked() {
-                                    ui.output_mut(|o| {
-                                        o.copied_text = entry.text.clone();
-                                    });
+                                    // egui 0.34 replaced `copied_text` with a
+                                    // command queue on PlatformOutput.
+                                    ui.ctx().copy_text(entry.text.clone());
                                     state.status_msg = Some((
                                         "✓ 已复制到剪贴板".to_string(),
                                         crate::theme::SUCCESS,

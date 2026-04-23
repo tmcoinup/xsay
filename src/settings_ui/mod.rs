@@ -150,12 +150,12 @@ pub fn render(ctx: &egui::Context, state: &mut SettingsState) -> bool {
     //   - render "xsay 设置" using the injected CJK font
     //   - match the dark theme instead of a white Gnome/Yaru bar
     //   - draw macOS-style traffic lights to match the Figma reference
-    egui::TopBottomPanel::top("xsay_titlebar")
-        .exact_height(36.0)
+    egui::Panel::top("xsay_titlebar")
+        .exact_size(36.0)
         .frame(
-            egui::Frame::none()
+            egui::Frame::new()
                 .fill(crate::theme::BG_PANEL)
-                .inner_margin(egui::Margin::symmetric(12.0, 0.0)),
+                .inner_margin(egui::Margin::symmetric(12, 0)),
         )
         .show(ctx, |ui| {
             if render_title_bar(ui, ctx) {
@@ -164,9 +164,9 @@ pub fn render(ctx: &egui::Context, state: &mut SettingsState) -> bool {
         });
 
     // Content panel: BG_WINDOW
-    let panel_frame = egui::Frame::none()
+    let panel_frame = egui::Frame::new()
         .fill(crate::theme::BG_WINDOW)
-        .inner_margin(egui::Margin::symmetric(16.0, 12.0));
+        .inner_margin(egui::Margin::symmetric(16, 12));
 
     egui::CentralPanel::default()
         .frame(panel_frame)
@@ -286,10 +286,10 @@ fn render_tab_button(
     let pad_x = 12.0;
 
     let font_id = egui::FontId::proportional(crate::theme::FONT_BODY);
-    let text_size = ui.fonts(|f| {
-        f.layout_no_wrap(label.to_string(), font_id.clone(), egui::Color32::WHITE)
-            .size()
-    });
+    let text_size = ui
+        .painter()
+        .layout_no_wrap(label.to_string(), font_id.clone(), egui::Color32::WHITE)
+        .size();
 
     let total = egui::vec2(
         pad_x * 2.0 + icon_size + gap + text_size.x,

@@ -24,12 +24,16 @@ pub fn install(ctx: &egui::Context) {
 
     let mut fonts = egui::FontDefinitions::default();
 
+    // egui 0.34 wraps each FontData in Arc for cheap cloning during font
+    // rebuilds; the inner struct still holds the bytes as Cow<'static, [u8]>.
     let font_data = egui::FontData {
         font: std::borrow::Cow::Owned(bytes),
         index,
         tweak: egui::FontTweak::default(),
     };
-    fonts.font_data.insert("cjk".to_owned(), font_data);
+    fonts
+        .font_data
+        .insert("cjk".to_owned(), std::sync::Arc::new(font_data));
 
     // Insert CJK as fallback behind the Latin default — default font handles
     // ASCII nicely, CJK picks up everything else. Proportional first position

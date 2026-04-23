@@ -368,10 +368,10 @@ fn banner(
     title: &str,
     subline: Option<&str>,
 ) {
-    egui::Frame::none()
+    egui::Frame::new()
         .fill(bg)
-        .inner_margin(egui::Margin::symmetric(12.0, 10.0))
-        .rounding(crate::theme::radius_md())
+        .inner_margin(egui::Margin::symmetric(12, 10))
+        .corner_radius(crate::theme::radius_md())
         .show(ui, |ui| {
             ui.label(
                 egui::RichText::new(title)

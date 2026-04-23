@@ -86,7 +86,13 @@ fn compute_corner_position(monitor: egui::Vec2, window: egui::Vec2, corner: &str
 }
 
 impl eframe::App for XsayOverlay {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        // egui 0.34 renamed `App::update` → `App::ui` and passes a root Ui
+        // instead of a Context. Most of our code still thinks in terms of
+        // viewport commands keyed on Context, so we take a clone and keep
+        // the original body largely unchanged.
+        let ctx = ui.ctx().clone();
+        let ctx = &ctx;
         // Handle tray menu events
         for action in tray::poll_events() {
             match action {
@@ -203,9 +209,9 @@ impl XsayOverlay {
         pulse: bool,
     ) {
         let bg = egui::Color32::from_rgba_premultiplied(0x14, 0x14, 0x1A, 210);
-        let frame = egui::Frame::none()
+        let frame = egui::Frame::new()
             .fill(bg)
-            .rounding(crate::theme::radius_xxl());
+            .corner_radius(crate::theme::radius_xxl());
 
         egui::CentralPanel::default().frame(frame).show(ctx, |ui| {
             let painter = ui.painter();
@@ -234,7 +240,7 @@ impl XsayOverlay {
                 center + egui::vec2(0.0, -6.0),
                 egui::vec2(10.0, 18.0),
             );
-            painter.rect_filled(mic_rect, egui::Rounding::same(5.0), egui::Color32::WHITE);
+            painter.rect_filled(mic_rect, egui::CornerRadius::same(5), egui::Color32::WHITE);
 
             // Stand
             let sy = center.y + 11.0;

@@ -80,10 +80,10 @@ pub fn render(ui: &mut egui::Ui, state: &mut SettingsState) {
 }
 
 fn render_no_model_banner(ui: &mut egui::Ui) {
-    egui::Frame::none()
+    egui::Frame::new()
         .fill(egui::Color32::from_rgb(90, 45, 20))
-        .inner_margin(egui::Margin::symmetric(12.0, 10.0))
-        .rounding(crate::theme::radius_md())
+        .inner_margin(egui::Margin::symmetric(12, 10))
+        .corner_radius(crate::theme::radius_md())
         .show(ui, |ui| {
             ui.set_min_width(ui.available_width());
             ui.horizontal(|ui| {
@@ -137,10 +137,10 @@ fn render_model_row(
 
     // Current card gets a 1px accent-green border to match the selected state
     // in the Figma reference.
-    let mut frame = egui::Frame::none()
+    let mut frame = egui::Frame::new()
         .fill(frame_color)
-        .inner_margin(egui::Margin::symmetric(14.0, 12.0))
-        .rounding(crate::theme::radius_lg());
+        .inner_margin(egui::Margin::symmetric(14, 12))
+        .corner_radius(crate::theme::radius_lg());
     if is_current {
         frame = frame.stroke(egui::Stroke::new(1.0, crate::theme::CURRENT));
     }
@@ -210,10 +210,10 @@ fn render_header_row(
         if is_current {
             // "当前使用" chip with a leading check icon, drawn in-frame so
             // the icon matches the row's accent tone.
-            let frame = egui::Frame::none()
+            let frame = egui::Frame::new()
                 .fill(crate::theme::CURRENT)
-                .rounding(crate::theme::radius_sm())
-                .inner_margin(egui::Margin::symmetric(6.0, 2.0));
+                .corner_radius(crate::theme::radius_sm())
+                .inner_margin(egui::Margin::symmetric(6, 2));
             frame.show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 3.0;
@@ -234,10 +234,10 @@ fn render_header_row(
         if let Some(remote_size) = remote {
             if is_downloaded {
                 if remote_size != local_size {
-                    let frame = egui::Frame::none()
+                    let frame = egui::Frame::new()
                         .fill(crate::theme::WARNING)
-                        .rounding(crate::theme::radius_sm())
-                        .inner_margin(egui::Margin::symmetric(6.0, 2.0));
+                        .corner_radius(crate::theme::radius_sm())
+                        .inner_margin(egui::Margin::symmetric(6, 2));
                     frame.show(ui, |ui| {
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = 3.0;

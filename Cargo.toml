@@ -30,8 +30,8 @@ assets = [
 cpal = "0.15"
 whisper-rs = "0.14"
 rdev = "0.5"
-eframe = { version = "0.29", features = ["default_fonts"] }
-egui = "0.29"
+eframe = { version = "0.34.1", features = ["default_fonts"] }
+egui = "0.34.1"
 enigo = "0.2"
 arboard = "3"
 serde = { version = "1", features = ["derive"] }
