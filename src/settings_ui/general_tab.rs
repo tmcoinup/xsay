@@ -38,7 +38,7 @@ pub fn render(ui: &mut egui::Ui, state: &mut SettingsState) {
 
             state.status_msg = Some((
                 "✓ 已保存并生效".to_string(),
-                egui::Color32::from_rgb(80, 200, 80),
+                crate::theme::SUCCESS,
             ));
         }
 
@@ -264,13 +264,13 @@ fn render_system_group(ui: &mut egui::Ui, state: &mut SettingsState) {
                         } else {
                             "✓ 开机自启动已关闭".to_string()
                         },
-                        egui::Color32::from_rgb(80, 200, 80),
+                        crate::theme::SUCCESS,
                     ));
                 }
                 Err(e) => {
                     state.status_msg = Some((
                         format!("✗ 自启动设置失败: {}", e),
-                        egui::Color32::from_rgb(255, 120, 120),
+                        crate::theme::DANGER_HOVER,
                     ));
                 }
             }

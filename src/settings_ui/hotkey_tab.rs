@@ -65,8 +65,8 @@ pub fn render(ui: &mut egui::Ui, state: &mut SettingsState) {
         ui.label(
             egui::RichText::new(&display)
                 .monospace()
-                .size(18.0)
-                .color(egui::Color32::from_rgb(120, 200, 255)),
+                .size(crate::theme::FONT_HERO)
+                .color(crate::theme::ACCENT),
         );
     });
 
@@ -77,7 +77,7 @@ pub fn render(ui: &mut egui::Ui, state: &mut SettingsState) {
         let (btn_text, btn_color) = if state.capturing {
             (
                 "⌨  请按下目标按键...".to_string(),
-                egui::Color32::from_rgb(255, 180, 50),
+                crate::theme::WARNING,
             )
         } else {
             ("  捕捉按键  ".to_string(), ui.visuals().text_color())
@@ -211,7 +211,7 @@ fn render_save_buttons(ui: &mut egui::Ui, state: &mut SettingsState) {
             };
             state.status_msg = Some((
                 format!("✓ 快捷键已更新为 {}（{}）", state.hotkey_key, mode_label),
-                egui::Color32::from_rgb(80, 220, 80),
+                crate::theme::SUCCESS,
             ));
         }
 

@@ -78,7 +78,7 @@ fn render_no_model_banner(ui: &mut egui::Ui) {
     egui::Frame::none()
         .fill(egui::Color32::from_rgb(90, 45, 20))
         .inner_margin(egui::Margin::symmetric(12.0, 10.0))
-        .rounding(egui::Rounding::same(6.0))
+        .rounding(crate::theme::radius_md())
         .show(ui, |ui| {
             ui.label(
                 egui::RichText::new("⚠  当前没有可用模型，xsay 无法识别语音")
@@ -87,7 +87,7 @@ fn render_no_model_banner(ui: &mut egui::Ui) {
             );
             ui.label(
                 egui::RichText::new("推荐下载 Medium (1.5 GB，中英文高精度)")
-                    .color(egui::Color32::from_rgb(255, 220, 150))
+                    .color(crate::theme::WARNING)
                     .small(),
             );
         });
@@ -117,15 +117,15 @@ fn render_model_row(
     let remote = state.remote_sizes.get(model.filename).copied().flatten();
 
     let frame_color = if is_current {
-        egui::Color32::from_rgb(30, 60, 30)
+        crate::theme::BG_SELECTED
     } else {
-        ui.visuals().extreme_bg_color
+        crate::theme::BG_CARD
     };
 
     egui::Frame::none()
         .fill(frame_color)
-        .inner_margin(egui::Margin::symmetric(10.0, 8.0))
-        .rounding(egui::Rounding::same(6.0))
+        .inner_margin(egui::Margin::symmetric(12.0, 10.0))
+        .rounding(crate::theme::radius_lg())
         .show(ui, |ui| {
             ui.horizontal(|ui| {
                 let radio = ui.radio(is_current, "");
@@ -183,7 +183,7 @@ fn render_header_row(
         if is_current {
             ui.label(
                 egui::RichText::new(" ✓ 当前使用 ")
-                    .color(egui::Color32::from_rgb(80, 220, 80))
+                    .color(crate::theme::CURRENT)
                     .small(),
             );
         }
@@ -193,13 +193,13 @@ fn render_header_row(
                 if remote_size != local_size {
                     ui.label(
                         egui::RichText::new("↑ 有更新")
-                            .color(egui::Color32::YELLOW)
+                            .color(crate::theme::WARNING)
                             .small(),
                     );
                 } else {
                     ui.label(
                         egui::RichText::new("✓ 最新")
-                            .color(egui::Color32::DARK_GREEN)
+                            .color(crate::theme::TEXT_SECONDARY)
                             .small(),
                     );
                 }
@@ -290,7 +290,7 @@ fn render_action_row(
             if let Some(DlState::Failed(e)) = dl_state_snap {
                 ui.label(
                     egui::RichText::new(format!("错误: {}", e))
-                        .color(egui::Color32::RED)
+                        .color(crate::theme::DANGER)
                         .small(),
                 );
                 if ui.small_button("重试").clicked() {
@@ -353,12 +353,12 @@ fn handle_download_completion(
                 let _ = state.model_reload_tx.send(downloaded_path);
                 state.status_msg = Some((
                     format!("✓ {} 下载完成并已启用", nice_name),
-                    egui::Color32::from_rgb(80, 200, 80),
+                    crate::theme::SUCCESS,
                 ));
             } else {
                 state.status_msg = Some((
                     format!("✓ {} 下载完成", nice_name),
-                    egui::Color32::from_rgb(80, 200, 80),
+                    crate::theme::SUCCESS,
                 ));
             }
         }
@@ -415,7 +415,7 @@ fn switch_model(model: &ModelInfo, local_path: &PathBuf, state: &mut SettingsSta
     let _ = state.model_reload_tx.send(local_path.clone());
     state.status_msg = Some((
         format!("✓ 已切换到 {} 模型（后台加载中）", model.name),
-        egui::Color32::from_rgb(80, 220, 80),
+        crate::theme::SUCCESS,
     ));
 }
 

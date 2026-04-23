@@ -136,26 +136,56 @@ pub fn render(ctx: &egui::Context, state: &mut SettingsState) {
     // Key capture runs at the top level so it works regardless of active tab.
     hotkey_tab::handle_key_capture(ctx, state);
 
-    egui::CentralPanel::default().show(ctx, |ui| {
-        ui.horizontal(|ui| {
-            for (tab, label) in [
-                (Tab::Model, "🤖  模型"),
-                (Tab::Hotkey, "⌨  快捷键"),
-                (Tab::General, "⚙  常规"),
-                (Tab::History, "📜  历史记录"),
-            ] {
-                if ui.selectable_label(state.tab == tab, label).clicked() {
-                    state.tab = tab;
-                }
+    // Fill the outer viewport with the window bg so there's no default
+    // light-grey gap around the panel.
+    let panel_frame = egui::Frame::none()
+        .fill(crate::theme::BG_WINDOW)
+        .inner_margin(egui::Margin::symmetric(12.0, 10.0));
+
+    egui::CentralPanel::default()
+        .frame(panel_frame)
+        .show(ctx, |ui| {
+            render_tab_bar(ui, state);
+            ui.add_space(10.0);
+
+            match state.tab {
+                Tab::Model => model_tab::render(ui, state),
+                Tab::Hotkey => hotkey_tab::render(ui, state),
+                Tab::General => general_tab::render(ui, state),
+                Tab::History => history_tab::render(ui, state),
             }
         });
-        ui.separator();
+}
 
-        match state.tab {
-            Tab::Model => model_tab::render(ui, state),
-            Tab::Hotkey => hotkey_tab::render(ui, state),
-            Tab::General => general_tab::render(ui, state),
-            Tab::History => history_tab::render(ui, state),
+/// Custom tab bar: active tab filled with theme::ACCENT, others are plain
+/// white text on the window bg. Replaces egui's default selectable_label
+/// (which uses a subtle grey fill that doesn't match the design).
+fn render_tab_bar(ui: &mut egui::Ui, state: &mut SettingsState) {
+    ui.horizontal(|ui| {
+        for (tab, label) in [
+            (Tab::Model, "🤖  模型"),
+            (Tab::Hotkey, "⌨  快捷键"),
+            (Tab::General, "⚙  常规"),
+            (Tab::History, "📜  历史记录"),
+        ] {
+            let active = state.tab == tab;
+            let (bg, fg) = if active {
+                (crate::theme::ACCENT, egui::Color32::WHITE)
+            } else {
+                (egui::Color32::TRANSPARENT, crate::theme::TEXT_SECONDARY)
+            };
+
+            let text = egui::RichText::new(label)
+                .color(fg)
+                .size(crate::theme::FONT_HEADING);
+            let btn = egui::Button::new(text)
+                .fill(bg)
+                .rounding(crate::theme::radius_md())
+                .min_size(egui::vec2(0.0, 28.0));
+
+            if ui.add(btn).clicked() {
+                state.tab = tab;
+            }
         }
     });
 }

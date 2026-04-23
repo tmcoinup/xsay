@@ -20,12 +20,12 @@ pub fn render(ui: &mut egui::Ui, state: &mut SettingsState) {
                 if let Err(e) = crate::history::clear() {
                     state.status_msg = Some((
                         format!("✗ 清空失败: {}", e),
-                        egui::Color32::from_rgb(255, 120, 120),
+                        crate::theme::DANGER_HOVER,
                     ));
                 } else {
                     state.status_msg = Some((
                         "✓ 历史已清空".to_string(),
-                        egui::Color32::from_rgb(80, 200, 80),
+                        crate::theme::SUCCESS,
                     ));
                 }
             }
@@ -46,9 +46,9 @@ pub fn render(ui: &mut egui::Ui, state: &mut SettingsState) {
 
         for entry in &entries {
             egui::Frame::none()
-                .fill(ui.visuals().extreme_bg_color)
-                .inner_margin(egui::Margin::symmetric(10.0, 8.0))
-                .rounding(egui::Rounding::same(4.0))
+                .fill(crate::theme::BG_CARD)
+                .inner_margin(egui::Margin::symmetric(12.0, 10.0))
+                .rounding(crate::theme::radius_lg())
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
                         ui.label(
@@ -68,7 +68,7 @@ pub fn render(ui: &mut egui::Ui, state: &mut SettingsState) {
                                     });
                                     state.status_msg = Some((
                                         "✓ 已复制到剪贴板".to_string(),
-                                        egui::Color32::from_rgb(80, 200, 80),
+                                        crate::theme::SUCCESS,
                                     ));
                                 }
                             },

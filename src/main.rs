@@ -13,6 +13,7 @@ mod model;
 mod overlay;
 mod settings_ui;
 mod state;
+mod theme;
 mod transcribe;
 mod tray;
 
