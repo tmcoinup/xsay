@@ -38,6 +38,10 @@ pub enum Tab {
 pub struct SettingsState {
     pub tab: Tab,
 
+    // Has the settings viewport's egui::Context been given a CJK font yet?
+    // Each viewport has its own Context, so fonts must be installed per-viewport.
+    pub fonts_installed: bool,
+
     // Model tab
     pub active_download: Option<ActiveDownload>,
     pub remote_sizes: HashMap<String, Option<u64>>,
@@ -85,6 +89,7 @@ impl SettingsState {
 
         Self {
             tab: Tab::Model,
+            fonts_installed: false,
             active_download: None,
             remote_sizes: HashMap::new(),
             update_rx: None,
@@ -110,6 +115,13 @@ impl SettingsState {
 
 /// Entry point called each frame by the settings viewport in `overlay.rs`.
 pub fn render(ctx: &egui::Context, state: &mut SettingsState) {
+    // Settings runs in its own viewport, which has its own Context/fonts.
+    // Install CJK font once so Chinese labels don't render as tofu.
+    if !state.fonts_installed {
+        crate::fonts::install(ctx);
+        state.fonts_installed = true;
+    }
+
     // Drain remote update-check results — the checker spawns one thread per
     // model and sends results back through `update_rx`.
     if let Some(rx) = &state.update_rx {

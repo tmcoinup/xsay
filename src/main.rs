@@ -3,6 +3,7 @@ mod autostart;
 mod config;
 mod download;
 mod error;
+mod fonts;
 mod history;
 mod hotkey;
 #[cfg(target_os = "linux")]
@@ -159,7 +160,8 @@ fn main() -> anyhow::Result<()> {
     eframe::run_native(
         "xsay",
         native_options,
-        Box::new(move |_cc| {
+        Box::new(move |cc| {
+            fonts::install(&cc.egui_ctx);
             Ok(Box::new(overlay::XsayOverlay::new(
                 shared_state,
                 shared_hotkey,
