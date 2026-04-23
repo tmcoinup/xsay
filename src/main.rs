@@ -3,6 +3,7 @@ mod autostart;
 mod config;
 mod download;
 mod error;
+mod history;
 mod hotkey;
 #[cfg(target_os = "linux")]
 mod hotkey_evdev;
@@ -306,6 +307,8 @@ fn handle_transcript(
             }
             return;
         }
+
+        history::append(&text);
 
         {
             let mut s = shared_state.lock();
