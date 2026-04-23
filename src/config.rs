@@ -20,6 +20,8 @@ pub struct HotkeyConfig {
     pub key: String,
     /// Optional modifier names: "ctrl", "alt", "shift", "super"
     pub modifiers: Vec<String>,
+    /// "hold" (push-to-talk) or "toggle" (tap to start, tap to stop)
+    pub mode: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -85,6 +87,7 @@ impl Default for HotkeyConfig {
         Self {
             key: "F9".to_string(),
             modifiers: vec![],
+            mode: "hold".to_string(),
         }
     }
 }

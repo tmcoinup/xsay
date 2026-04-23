@@ -89,6 +89,7 @@ pub struct SettingsState {
     // Hotkey tab
     pub hotkey_key: String,
     pub hotkey_mods: Vec<String>,
+    pub hotkey_mode: String,
     pub capturing: bool,
 
     // Shared with worker threads for live update
@@ -135,6 +136,7 @@ impl SettingsState {
             checking_updates: false,
             hotkey_key: config.hotkey.key.clone(),
             hotkey_mods: config.hotkey.modifiers.clone(),
+            hotkey_mode: config.hotkey.mode.clone(),
             capturing: false,
             shared_hotkey,
             shared_audio,
@@ -670,6 +672,25 @@ fn render_hotkey_tab(ui: &mut egui::Ui, state: &mut SettingsState, _ctx: &egui::
 
     ui.add_space(10.0);
 
+    // Trigger mode
+    ui.label(egui::RichText::new("触发模式：").strong());
+    ui.horizontal(|ui| {
+        if ui
+            .radio(state.hotkey_mode == "hold", "按住说话（松开识别）")
+            .clicked()
+        {
+            state.hotkey_mode = "hold".to_string();
+        }
+        if ui
+            .radio(state.hotkey_mode == "toggle", "点按切换（再按结束）")
+            .clicked()
+        {
+            state.hotkey_mode = "toggle".to_string();
+        }
+    });
+
+    ui.add_space(10.0);
+
     // Modifiers
     ui.label(egui::RichText::new("修饰键（可选）：").strong());
     ui.horizontal(|ui| {
@@ -695,9 +716,12 @@ fn render_hotkey_tab(ui: &mut egui::Ui, state: &mut SettingsState, _ctx: &egui::
     let current = state.shared_hotkey.lock();
     let saved_key = current.key.clone();
     let saved_mods = current.modifiers.clone();
+    let saved_mode = current.mode.clone();
     drop(current);
 
-    let changed = state.hotkey_key != saved_key || state.hotkey_mods != saved_mods;
+    let changed = state.hotkey_key != saved_key
+        || state.hotkey_mods != saved_mods
+        || state.hotkey_mode != saved_mode;
 
     ui.horizontal(|ui| {
         let save_btn = ui.add_enabled(changed, egui::Button::new("💾  保存快捷键"));
@@ -707,19 +731,26 @@ fn render_hotkey_tab(ui: &mut egui::Ui, state: &mut SettingsState, _ctx: &egui::
                 let mut hk = state.shared_hotkey.lock();
                 hk.key = state.hotkey_key.clone();
                 hk.modifiers = state.hotkey_mods.clone();
+                hk.mode = state.hotkey_mode.clone();
             }
             // Persist to config.toml
             if let Ok(mut cfg) = Config::load() {
                 cfg.hotkey.key = state.hotkey_key.clone();
                 cfg.hotkey.modifiers = state.hotkey_mods.clone();
+                cfg.hotkey.mode = state.hotkey_mode.clone();
                 if let Ok(path) = Config::config_path() {
                     if let Ok(text) = toml::to_string_pretty(&cfg) {
                         let _ = std::fs::write(path, text);
                     }
                 }
             }
+            let mode_label = if state.hotkey_mode == "toggle" {
+                "点按切换"
+            } else {
+                "按住说话"
+            };
             state.status_msg = Some((
-                format!("✓ 快捷键已更新为 {}", state.hotkey_key),
+                format!("✓ 快捷键已更新为 {}（{}）", state.hotkey_key, mode_label),
                 egui::Color32::from_rgb(80, 220, 80),
             ));
         }
@@ -728,6 +759,7 @@ fn render_hotkey_tab(ui: &mut egui::Ui, state: &mut SettingsState, _ctx: &egui::
         if revert_btn.clicked() {
             state.hotkey_key = saved_key;
             state.hotkey_mods = saved_mods;
+            state.hotkey_mode = saved_mode;
         }
     });
 
@@ -739,13 +771,12 @@ fn render_hotkey_tab(ui: &mut egui::Ui, state: &mut SettingsState, _ctx: &egui::
     ui.add_space(12.0);
     ui.separator();
     ui.add_space(4.0);
-    ui.label(
-        egui::RichText::new(
-            "提示：按住快捷键录音，松开转写输入。停顿 1.5 秒自动识别。Esc 取消。",
-        )
-        .weak()
-        .small(),
-    );
+    let tip = if state.hotkey_mode == "toggle" {
+        "提示：点按快捷键开始录音，再按一次结束并输入。停顿 1.5 秒自动识别。Esc 取消。"
+    } else {
+        "提示：按住快捷键录音，松开转写输入。停顿 1.5 秒自动识别。Esc 取消。"
+    };
+    ui.label(egui::RichText::new(tip).weak().small());
 }
 
 // ---------------------------------------------------------------------------

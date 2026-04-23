@@ -23,11 +23,16 @@ pub fn run_hotkey_thread(
     shared_config: Arc<Mutex<HotkeyConfig>>,
     capture_active: Arc<AtomicBool>,
 ) {
+    // held_keys: which keys the OS currently reports as physically down (used
+    // to filter auto-repeat — the OS sends repeated KeyPress without interleaved
+    // KeyRelease while a key is held).
     let held_keys: Arc<Mutex<HashSet<Key>>> = Arc::new(Mutex::new(HashSet::new()));
-    let hotkey_active = Arc::new(AtomicBool::new(false));
+    // recording: logical "are we currently in a recording session?" Different
+    // from held_keys[target] because toggle mode has press-release-press cycles.
+    let recording = Arc::new(AtomicBool::new(false));
 
     let held_clone = Arc::clone(&held_keys);
-    let active_clone = Arc::clone(&hotkey_active);
+    let rec_clone = Arc::clone(&recording);
     let tx = event_tx;
     let cfg = shared_config;
     let capturing = capture_active;
@@ -35,33 +40,59 @@ pub fn run_hotkey_thread(
     if let Err(e) = listen(move |event| {
         match event.event_type {
             EventType::KeyPress(key) => {
-                let mut held = held_clone.lock();
-                held.insert(key.clone());
+                let already_down = {
+                    let mut held = held_clone.lock();
+                    let was = held.contains(&key);
+                    held.insert(key.clone());
+                    was
+                };
 
-                // While settings is capturing a hotkey, suppress normal hotkey events
                 if capturing.load(Ordering::SeqCst) {
                     return;
-                }
-
-                let config = cfg.lock();
-                let target = parse_key(&config.key);
-                let mods_ok = config
-                    .modifiers
-                    .iter()
-                    .all(|m| parse_modifier(m).map(|k| held.contains(&k)).unwrap_or(true));
-
-                if key == target && mods_ok && !active_clone.load(Ordering::SeqCst) {
-                    active_clone.store(true, Ordering::SeqCst);
-                    let _ = tx.send(AppEvent::HotkeyPressed);
                 }
 
                 if key == Key::Escape {
                     let _ = tx.send(AppEvent::EscapePressed);
                 }
+
+                // Ignore OS auto-repeat for hotkey logic.
+                if already_down {
+                    return;
+                }
+
+                let config = cfg.lock();
+                let target = parse_key(&config.key);
+                let mode = config.mode.clone();
+                let held = held_clone.lock();
+                let mods_ok = config
+                    .modifiers
+                    .iter()
+                    .all(|m| parse_modifier(m).map(|k| held.contains(&k)).unwrap_or(true));
+                drop(held);
+                drop(config);
+
+                if key != target || !mods_ok {
+                    return;
+                }
+
+                if mode == "toggle" {
+                    if rec_clone.load(Ordering::SeqCst) {
+                        rec_clone.store(false, Ordering::SeqCst);
+                        let _ = tx.send(AppEvent::HotkeyReleased);
+                    } else {
+                        rec_clone.store(true, Ordering::SeqCst);
+                        let _ = tx.send(AppEvent::HotkeyPressed);
+                    }
+                } else {
+                    // hold mode
+                    if !rec_clone.load(Ordering::SeqCst) {
+                        rec_clone.store(true, Ordering::SeqCst);
+                        let _ = tx.send(AppEvent::HotkeyPressed);
+                    }
+                }
             }
             EventType::KeyRelease(key) => {
-                let mut held = held_clone.lock();
-                held.remove(&key);
+                held_clone.lock().remove(&key);
 
                 if capturing.load(Ordering::SeqCst) {
                     return;
@@ -69,9 +100,11 @@ pub fn run_hotkey_thread(
 
                 let config = cfg.lock();
                 let target = parse_key(&config.key);
+                let is_hold_mode = config.mode != "toggle";
+                drop(config);
 
-                if key == target && active_clone.load(Ordering::SeqCst) {
-                    active_clone.store(false, Ordering::SeqCst);
+                if key == target && is_hold_mode && rec_clone.load(Ordering::SeqCst) {
+                    rec_clone.store(false, Ordering::SeqCst);
                     let _ = tx.send(AppEvent::HotkeyReleased);
                 }
             }

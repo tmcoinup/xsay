@@ -41,7 +41,9 @@ pub fn spawn_hotkey_threads(
         );
     }
 
-    let hotkey_active = Arc::new(AtomicBool::new(false));
+    // recording: logical "are we currently recording?" Different from the
+    // physical-key-down held_keys set, because toggle mode cycles it with taps.
+    let recording = Arc::new(AtomicBool::new(false));
     let held_keys: Arc<Mutex<HashSet<u16>>> = Arc::new(Mutex::new(HashSet::new()));
 
     let n = devices.len();
@@ -49,7 +51,7 @@ pub fn spawn_hotkey_threads(
         let event_tx = event_tx.clone();
         let shared_config = Arc::clone(&shared_config);
         let capture_active = Arc::clone(&capture_active);
-        let hotkey_active = Arc::clone(&hotkey_active);
+        let recording = Arc::clone(&recording);
         let held_keys = Arc::clone(&held_keys);
 
         std::thread::spawn(move || {
@@ -59,7 +61,7 @@ pub fn spawn_hotkey_threads(
                 event_tx,
                 shared_config,
                 capture_active,
-                hotkey_active,
+                recording,
                 held_keys,
             );
         });
@@ -73,7 +75,7 @@ fn run_device_loop(
     event_tx: Sender<AppEvent>,
     shared_config: Arc<Mutex<HotkeyConfig>>,
     capture_active: Arc<AtomicBool>,
-    hotkey_active: Arc<AtomicBool>,
+    recording: Arc<AtomicBool>,
     held_keys: Arc<Mutex<HashSet<u16>>>,
 ) {
     loop {
@@ -86,7 +88,7 @@ fn run_device_loop(
                             &event_tx,
                             &shared_config,
                             &capture_active,
-                            &hotkey_active,
+                            &recording,
                             &held_keys,
                         );
                     }
@@ -105,7 +107,7 @@ fn handle_key(
     event_tx: &Sender<AppEvent>,
     shared_config: &Arc<Mutex<HotkeyConfig>>,
     capture_active: &Arc<AtomicBool>,
-    hotkey_active: &Arc<AtomicBool>,
+    recording: &Arc<AtomicBool>,
     held_keys: &Arc<Mutex<HashSet<u16>>>,
 ) {
     let code = ev.code();
@@ -129,27 +131,41 @@ fn handle_key(
         return;
     }
 
+    if pressed && code == EvKey::KEY_ESC.code() {
+        let _ = event_tx.send(AppEvent::EscapePressed);
+    }
+
     let cfg = shared_config.lock().clone();
     let target = key_name_to_evdev(&cfg.key);
+    let is_toggle = cfg.mode == "toggle";
     let mods_ok = cfg.modifiers.iter().all(|m| {
         modifier_to_evdev(m)
             .map(|c| held_keys.lock().contains(&c))
             .unwrap_or(true)
     });
 
-    if Some(code) == target {
-        if pressed && mods_ok && !hotkey_active.load(Ordering::SeqCst) {
-            hotkey_active.store(true, Ordering::SeqCst);
+    if Some(code) != target {
+        return;
+    }
+
+    if pressed && mods_ok {
+        if is_toggle {
+            if recording.load(Ordering::SeqCst) {
+                recording.store(false, Ordering::SeqCst);
+                let _ = event_tx.send(AppEvent::HotkeyReleased);
+            } else {
+                recording.store(true, Ordering::SeqCst);
+                let _ = event_tx.send(AppEvent::HotkeyPressed);
+            }
+        } else if !recording.load(Ordering::SeqCst) {
+            recording.store(true, Ordering::SeqCst);
             let _ = event_tx.send(AppEvent::HotkeyPressed);
-        }
-        if released && hotkey_active.load(Ordering::SeqCst) {
-            hotkey_active.store(false, Ordering::SeqCst);
-            let _ = event_tx.send(AppEvent::HotkeyReleased);
         }
     }
 
-    if pressed && code == EvKey::KEY_ESC.code() {
-        let _ = event_tx.send(AppEvent::EscapePressed);
+    if released && !is_toggle && recording.load(Ordering::SeqCst) {
+        recording.store(false, Ordering::SeqCst);
+        let _ = event_tx.send(AppEvent::HotkeyReleased);
     }
 }
 
