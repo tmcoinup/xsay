@@ -72,7 +72,8 @@ pub const FONT_H1: f32 = 28.0;
 // Small UI primitives matching the Figma reference
 // ---------------------------------------------------------------------------
 
-use eframe::egui::{self, Response, Ui};
+use eframe::egui::{self, Painter, Rect, Response, Stroke, Ui};
+use std::f32::consts::PI;
 
 /// Chip-style label with rounded background — e.g. "✓ 当前使用" / "↑ 有更新".
 pub fn chip(ui: &mut Ui, text: &str, fg: egui::Color32, bg: egui::Color32) -> Response {
@@ -88,27 +89,376 @@ pub fn chip(ui: &mut Ui, text: &str, fg: egui::Color32, bg: egui::Color32) -> Re
         .response
 }
 
-/// Primary accent button (filled blue with white text), small size.
-pub fn primary_button(ui: &mut Ui, text: &str) -> Response {
-    let btn = egui::Button::new(
-        egui::RichText::new(text)
-            .color(egui::Color32::WHITE)
-            .size(FONT_MD),
-    )
-    .fill(ACCENT)
-    .rounding(radius_sm())
-    .min_size(egui::vec2(0.0, 24.0));
-    ui.add(btn)
+/// Icons we draw via `egui::Painter` so they never render as tofu boxes.
+/// Noto CJK doesn't cover the SMP emoji range, and even BMP symbols like ⚙
+/// are inconsistent across systems, so we just paint our own 14×14 glyphs.
+#[derive(Clone, Copy)]
+pub enum Icon {
+    Check,
+    X,
+    Trash,
+    Download,
+    Pause,
+    Play,
+    Refresh,
+    Up,
+    Warning,
+    // Tab icons
+    Box,
+    Keyboard,
+    Gear,
+    Document,
 }
 
-/// Subtle button: transparent bg, border-less, grey text. Used for destructive
-/// secondary actions (删除, 取消).
-pub fn ghost_button(ui: &mut Ui, text: &str, color: egui::Color32) -> Response {
-    let btn = egui::Button::new(
-        egui::RichText::new(text).color(color).size(FONT_MD),
-    )
-    .fill(BG_CARD_HOVER)
-    .rounding(radius_sm())
-    .min_size(egui::vec2(0.0, 24.0));
-    ui.add(btn)
+pub fn draw_icon(painter: &Painter, rect: Rect, icon: Icon, color: egui::Color32) {
+    let stroke = Stroke::new(1.5, color);
+    let r = rect;
+    let w = r.width();
+    let h = r.height();
+    let c = r.center();
+
+    match icon {
+        Icon::Check => {
+            painter.line_segment(
+                [
+                    egui::pos2(r.min.x + w * 0.15, c.y + h * 0.05),
+                    egui::pos2(r.min.x + w * 0.4, r.max.y - h * 0.15),
+                ],
+                stroke,
+            );
+            painter.line_segment(
+                [
+                    egui::pos2(r.min.x + w * 0.4, r.max.y - h * 0.15),
+                    egui::pos2(r.max.x - w * 0.1, r.min.y + h * 0.2),
+                ],
+                stroke,
+            );
+        }
+        Icon::X => {
+            painter.line_segment(
+                [
+                    egui::pos2(r.min.x + w * 0.2, r.min.y + h * 0.2),
+                    egui::pos2(r.max.x - w * 0.2, r.max.y - h * 0.2),
+                ],
+                stroke,
+            );
+            painter.line_segment(
+                [
+                    egui::pos2(r.max.x - w * 0.2, r.min.y + h * 0.2),
+                    egui::pos2(r.min.x + w * 0.2, r.max.y - h * 0.2),
+                ],
+                stroke,
+            );
+        }
+        Icon::Trash => {
+            let lid_y = r.min.y + h * 0.32;
+            painter.line_segment(
+                [
+                    egui::pos2(r.min.x + w * 0.1, lid_y),
+                    egui::pos2(r.max.x - w * 0.1, lid_y),
+                ],
+                stroke,
+            );
+            let handle_w = w * 0.3;
+            let hx0 = c.x - handle_w / 2.0;
+            let hx1 = c.x + handle_w / 2.0;
+            let hy = r.min.y + h * 0.2;
+            painter.line_segment([egui::pos2(hx0, hy), egui::pos2(hx0, lid_y)], stroke);
+            painter.line_segment([egui::pos2(hx0, hy), egui::pos2(hx1, hy)], stroke);
+            painter.line_segment([egui::pos2(hx1, hy), egui::pos2(hx1, lid_y)], stroke);
+            let tl = egui::pos2(r.min.x + w * 0.22, lid_y);
+            let tr = egui::pos2(r.max.x - w * 0.22, lid_y);
+            let bl = egui::pos2(r.min.x + w * 0.28, r.max.y - h * 0.1);
+            let br = egui::pos2(r.max.x - w * 0.28, r.max.y - h * 0.1);
+            painter.line_segment([tl, bl], stroke);
+            painter.line_segment([bl, br], stroke);
+            painter.line_segment([tr, br], stroke);
+        }
+        Icon::Download => {
+            painter.line_segment(
+                [
+                    egui::pos2(c.x, r.min.y + h * 0.15),
+                    egui::pos2(c.x, r.min.y + h * 0.62),
+                ],
+                stroke,
+            );
+            painter.line_segment(
+                [
+                    egui::pos2(c.x - w * 0.2, r.min.y + h * 0.42),
+                    egui::pos2(c.x, r.min.y + h * 0.62),
+                ],
+                stroke,
+            );
+            painter.line_segment(
+                [
+                    egui::pos2(c.x + w * 0.2, r.min.y + h * 0.42),
+                    egui::pos2(c.x, r.min.y + h * 0.62),
+                ],
+                stroke,
+            );
+            painter.line_segment(
+                [
+                    egui::pos2(r.min.x + w * 0.15, r.max.y - h * 0.1),
+                    egui::pos2(r.max.x - w * 0.15, r.max.y - h * 0.1),
+                ],
+                stroke,
+            );
+        }
+        Icon::Pause => {
+            let bar_h = h * 0.55;
+            let bar_w = w * 0.14;
+            let gap = w * 0.12;
+            let y_top = c.y - bar_h / 2.0;
+            painter.rect_filled(
+                Rect::from_min_size(
+                    egui::pos2(c.x - gap / 2.0 - bar_w, y_top),
+                    egui::vec2(bar_w, bar_h),
+                ),
+                egui::Rounding::same(1.0),
+                color,
+            );
+            painter.rect_filled(
+                Rect::from_min_size(
+                    egui::pos2(c.x + gap / 2.0, y_top),
+                    egui::vec2(bar_w, bar_h),
+                ),
+                egui::Rounding::same(1.0),
+                color,
+            );
+        }
+        Icon::Play => {
+            let pts = vec![
+                egui::pos2(r.min.x + w * 0.28, r.min.y + h * 0.2),
+                egui::pos2(r.max.x - w * 0.2, c.y),
+                egui::pos2(r.min.x + w * 0.28, r.max.y - h * 0.2),
+            ];
+            painter.add(egui::Shape::convex_polygon(pts, color, Stroke::NONE));
+        }
+        Icon::Refresh => {
+            let radius = w * 0.32;
+            let start_angle = -PI * 0.2;
+            let end_angle = PI * 1.3;
+            let steps = 20;
+            let mut pts = Vec::with_capacity(steps + 1);
+            for i in 0..=steps {
+                let t = i as f32 / steps as f32;
+                let a = start_angle + (end_angle - start_angle) * t;
+                pts.push(c + egui::vec2(a.cos() * radius, a.sin() * radius));
+            }
+            for pair in pts.windows(2) {
+                painter.line_segment([pair[0], pair[1]], stroke);
+            }
+            let last = *pts.last().unwrap();
+            let prev = pts[pts.len() - 2];
+            let dir = (last - prev).normalized();
+            let perp = egui::vec2(-dir.y, dir.x);
+            let asz = w * 0.18;
+            painter.line_segment(
+                [last, last - dir * asz + perp * asz * 0.5],
+                stroke,
+            );
+            painter.line_segment(
+                [last, last - dir * asz - perp * asz * 0.5],
+                stroke,
+            );
+        }
+        Icon::Up => {
+            painter.line_segment(
+                [
+                    egui::pos2(c.x, r.max.y - h * 0.15),
+                    egui::pos2(c.x, r.min.y + h * 0.2),
+                ],
+                stroke,
+            );
+            painter.line_segment(
+                [
+                    egui::pos2(r.min.x + w * 0.25, r.min.y + h * 0.4),
+                    egui::pos2(c.x, r.min.y + h * 0.2),
+                ],
+                stroke,
+            );
+            painter.line_segment(
+                [
+                    egui::pos2(r.max.x - w * 0.25, r.min.y + h * 0.4),
+                    egui::pos2(c.x, r.min.y + h * 0.2),
+                ],
+                stroke,
+            );
+        }
+        Icon::Warning => {
+            let pts = vec![
+                egui::pos2(c.x, r.min.y + h * 0.1),
+                egui::pos2(r.min.x + w * 0.1, r.max.y - h * 0.1),
+                egui::pos2(r.max.x - w * 0.1, r.max.y - h * 0.1),
+            ];
+            painter.add(egui::Shape::closed_line(pts, stroke));
+            painter.line_segment(
+                [
+                    egui::pos2(c.x, r.min.y + h * 0.35),
+                    egui::pos2(c.x, r.min.y + h * 0.65),
+                ],
+                stroke,
+            );
+            painter.circle_filled(egui::pos2(c.x, r.max.y - h * 0.22), 1.2, color);
+        }
+        Icon::Box => {
+            painter.rect_stroke(r.shrink(w * 0.12), egui::Rounding::same(1.5), stroke);
+            painter.line_segment(
+                [
+                    egui::pos2(r.min.x + w * 0.12, c.y),
+                    egui::pos2(r.max.x - w * 0.12, c.y),
+                ],
+                stroke,
+            );
+        }
+        Icon::Keyboard => {
+            painter.rect_stroke(
+                Rect::from_min_max(
+                    egui::pos2(r.min.x + w * 0.05, r.min.y + h * 0.25),
+                    egui::pos2(r.max.x - w * 0.05, r.max.y - h * 0.15),
+                ),
+                egui::Rounding::same(1.5),
+                stroke,
+            );
+            let row1_y = r.min.y + h * 0.44;
+            let row2_y = r.min.y + h * 0.60;
+            for col in 0..4 {
+                let x = r.min.x + w * (0.18 + col as f32 * 0.2);
+                painter.circle_filled(egui::pos2(x, row1_y), 0.8, color);
+                painter.circle_filled(egui::pos2(x, row2_y), 0.8, color);
+            }
+            painter.line_segment(
+                [
+                    egui::pos2(r.min.x + w * 0.22, r.max.y - h * 0.24),
+                    egui::pos2(r.max.x - w * 0.22, r.max.y - h * 0.24),
+                ],
+                stroke,
+            );
+        }
+        Icon::Gear => {
+            painter.circle_stroke(c, w * 0.22, stroke);
+            painter.circle_stroke(c, w * 0.08, stroke);
+            for i in 0..6 {
+                let a = i as f32 / 6.0 * 2.0 * PI;
+                let r_in = w * 0.26;
+                let r_out = w * 0.42;
+                painter.line_segment(
+                    [
+                        c + egui::vec2(a.cos() * r_in, a.sin() * r_in),
+                        c + egui::vec2(a.cos() * r_out, a.sin() * r_out),
+                    ],
+                    Stroke::new(2.0, color),
+                );
+            }
+        }
+        Icon::Document => {
+            painter.rect_stroke(
+                Rect::from_min_max(
+                    egui::pos2(r.min.x + w * 0.22, r.min.y + h * 0.08),
+                    egui::pos2(r.max.x - w * 0.22, r.max.y - h * 0.08),
+                ),
+                egui::Rounding::same(1.5),
+                stroke,
+            );
+            for i in 0..3 {
+                let y = r.min.y + h * (0.3 + i as f32 * 0.18);
+                painter.line_segment(
+                    [
+                        egui::pos2(r.min.x + w * 0.32, y),
+                        egui::pos2(r.max.x - w * 0.32, y),
+                    ],
+                    Stroke::new(1.0, color),
+                );
+            }
+        }
+    }
+}
+
+fn brighten(c: egui::Color32, factor: f32) -> egui::Color32 {
+    let [r, g, b, a] = c.to_array();
+    let b_fn = |v: u8| ((v as f32 * factor).min(255.0)) as u8;
+    egui::Color32::from_rgba_premultiplied(b_fn(r), b_fn(g), b_fn(b), a)
+}
+
+/// Link-style text button — no fill, no border. Color brightens on hover.
+pub fn link_button(ui: &mut Ui, text: &str, color: egui::Color32) -> Response {
+    let font_id = egui::FontId::proportional(FONT_MD);
+    let text_size = ui.fonts(|f| {
+        f.layout_no_wrap(text.to_string(), font_id.clone(), color)
+            .size()
+    });
+    let (rect, response) = ui.allocate_exact_size(
+        egui::vec2(text_size.x + 4.0, text_size.y.max(20.0)),
+        egui::Sense::click(),
+    );
+    let col = if response.hovered() {
+        brighten(color, 1.2)
+    } else {
+        color
+    };
+    ui.painter().text(
+        egui::pos2(rect.min.x + 2.0, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        text,
+        font_id,
+        col,
+    );
+    response
+}
+
+/// Icon + text link button — matches the Figma reference (transparent, color
+/// brightens on hover). Used for all action buttons in model rows.
+pub fn icon_link_button(ui: &mut Ui, icon: Icon, text: &str, color: egui::Color32) -> Response {
+    let icon_size = 14.0;
+    let gap = 4.0;
+    let font_id = egui::FontId::proportional(FONT_MD);
+    let text_size = ui.fonts(|f| {
+        f.layout_no_wrap(text.to_string(), font_id.clone(), color)
+            .size()
+    });
+    let total = egui::vec2(
+        icon_size + gap + text_size.x + 4.0,
+        icon_size.max(text_size.y).max(20.0),
+    );
+    let (rect, response) = ui.allocate_exact_size(total, egui::Sense::click());
+    let col = if response.hovered() {
+        brighten(color, 1.2)
+    } else {
+        color
+    };
+    let icon_rect = Rect::from_min_size(
+        egui::pos2(rect.min.x, rect.center().y - icon_size / 2.0),
+        egui::vec2(icon_size, icon_size),
+    );
+    draw_icon(ui.painter(), icon_rect, icon, col);
+    ui.painter().text(
+        egui::pos2(rect.min.x + icon_size + gap, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        text,
+        font_id,
+        col,
+    );
+    response
+}
+
+/// Custom radio button — outer ring, filled dot when selected. Matches the
+/// Figma solid-blue style (egui's default radio uses a thin tick glyph that
+/// looks inconsistent against the rest of the UI).
+pub fn radio_button(ui: &mut Ui, selected: bool, color: egui::Color32) -> Response {
+    let size = egui::vec2(18.0, 18.0);
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+    let center = rect.center();
+    let ring_color = if selected {
+        color
+    } else if response.hovered() {
+        TEXT_PRIMARY
+    } else {
+        TEXT_SECONDARY
+    };
+    ui.painter()
+        .circle_stroke(center, 7.5, Stroke::new(1.5, ring_color));
+    if selected {
+        ui.painter().circle_filled(center, 4.0, color);
+    }
+    response
 }

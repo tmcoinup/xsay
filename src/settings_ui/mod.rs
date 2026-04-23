@@ -254,38 +254,73 @@ fn render_title_bar(ui: &mut egui::Ui, ctx: &egui::Context) -> bool {
 }
 
 /// Custom tab bar: active tab filled with theme::ACCENT, others are plain
-/// white text on the window bg. Replaces egui's default selectable_label
-/// (which uses a subtle grey fill that doesn't match the design).
+/// text on the window bg. Replaces egui's default selectable_label (which
+/// uses a subtle grey fill that doesn't match the design). Icons are
+/// painter-drawn to avoid emoji tofu.
 fn render_tab_bar(ui: &mut egui::Ui, state: &mut SettingsState) {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 4.0;
-        // No emoji — Noto CJK doesn't contain SMP emoji codepoints, so they
-        // rendered as tofu. Plain-text labels with generous padding read
-        // better anyway.
-        for (tab, label) in [
-            (Tab::Model, "模型"),
-            (Tab::Hotkey, "快捷键"),
-            (Tab::General, "常规"),
-            (Tab::History, "历史记录"),
+        for (tab, icon, label) in [
+            (Tab::Model, crate::theme::Icon::Box, "模型"),
+            (Tab::Hotkey, crate::theme::Icon::Keyboard, "快捷键"),
+            (Tab::General, crate::theme::Icon::Gear, "常规"),
+            (Tab::History, crate::theme::Icon::Document, "历史记录"),
         ] {
             let active = state.tab == tab;
-            let (bg, fg) = if active {
-                (crate::theme::ACCENT, egui::Color32::WHITE)
-            } else {
-                (egui::Color32::TRANSPARENT, crate::theme::TEXT_SECONDARY)
-            };
-
-            let text = egui::RichText::new(label)
-                .color(fg)
-                .size(crate::theme::FONT_BODY);
-            let btn = egui::Button::new(text)
-                .fill(bg)
-                .rounding(crate::theme::radius_md())
-                .min_size(egui::vec2(72.0, 30.0));
-
-            if ui.add(btn).clicked() {
+            if render_tab_button(ui, icon, label, active) {
                 state.tab = tab;
             }
         }
     });
+}
+
+fn render_tab_button(
+    ui: &mut egui::Ui,
+    icon: crate::theme::Icon,
+    label: &str,
+    active: bool,
+) -> bool {
+    let icon_size = 14.0;
+    let gap = 6.0;
+    let height = 30.0;
+    let pad_x = 12.0;
+
+    let font_id = egui::FontId::proportional(crate::theme::FONT_BODY);
+    let text_size = ui.fonts(|f| {
+        f.layout_no_wrap(label.to_string(), font_id.clone(), egui::Color32::WHITE)
+            .size()
+    });
+
+    let total = egui::vec2(
+        pad_x * 2.0 + icon_size + gap + text_size.x,
+        height,
+    );
+    let (rect, response) = ui.allocate_exact_size(total, egui::Sense::click());
+
+    let (bg, fg) = if active {
+        (crate::theme::ACCENT, egui::Color32::WHITE)
+    } else if response.hovered() {
+        (crate::theme::BG_CARD, crate::theme::TEXT_PRIMARY)
+    } else {
+        (egui::Color32::TRANSPARENT, crate::theme::TEXT_SECONDARY)
+    };
+
+    ui.painter()
+        .rect_filled(rect, crate::theme::radius_md(), bg);
+
+    let icon_rect = egui::Rect::from_min_size(
+        egui::pos2(rect.min.x + pad_x, rect.center().y - icon_size / 2.0),
+        egui::vec2(icon_size, icon_size),
+    );
+    crate::theme::draw_icon(ui.painter(), icon_rect, icon, fg);
+
+    ui.painter().text(
+        egui::pos2(rect.min.x + pad_x + icon_size + gap, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        label,
+        font_id,
+        fg,
+    );
+
+    response.clicked()
 }

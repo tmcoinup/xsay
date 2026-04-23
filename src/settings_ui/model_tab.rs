@@ -3,6 +3,7 @@
 use super::{models::MODELS, ActiveDownload, ModelInfo, SettingsState};
 use crate::config::Config;
 use crate::download::{self, DlState, DownloadCmd, DownloadProgress};
+use crate::theme::{self, Icon};
 use eframe::egui;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -56,13 +57,17 @@ pub fn render(ui: &mut egui::Ui, state: &mut SettingsState) {
             ui.add_space(2.0);
         }
 
-        ui.separator();
-        ui.add_space(4.0);
+        ui.add_space(6.0);
 
         ui.horizontal(|ui| {
             let checking = state.checking_updates;
-            let label = if checking { "🔄 检查中..." } else { "🔄 检查所有模型更新" };
-            if ui.add_enabled(!checking, egui::Button::new(label)).clicked() {
+            let label = if checking { "检查中..." } else { "检查所有模型更新" };
+            let color = if checking {
+                crate::theme::TEXT_DISABLED
+            } else {
+                crate::theme::ACCENT
+            };
+            if theme::icon_link_button(ui, Icon::Refresh, label, color).clicked() && !checking {
                 check_all_updates(state);
             }
         });
@@ -80,11 +85,19 @@ fn render_no_model_banner(ui: &mut egui::Ui) {
         .inner_margin(egui::Margin::symmetric(12.0, 10.0))
         .rounding(crate::theme::radius_md())
         .show(ui, |ui| {
-            ui.label(
-                egui::RichText::new("⚠  当前没有可用模型，xsay 无法识别语音")
-                    .color(egui::Color32::WHITE)
-                    .strong(),
-            );
+            ui.set_min_width(ui.available_width());
+            ui.horizontal(|ui| {
+                let (rect, _) = ui.allocate_exact_size(
+                    egui::vec2(18.0, 18.0),
+                    egui::Sense::hover(),
+                );
+                theme::draw_icon(ui.painter(), rect, Icon::Warning, crate::theme::WARNING);
+                ui.label(
+                    egui::RichText::new("当前没有可用模型，xsay 无法识别语音")
+                        .color(egui::Color32::WHITE)
+                        .strong(),
+                );
+            });
             ui.label(
                 egui::RichText::new("推荐下载 Medium (1.5 GB，中英文高精度)")
                     .color(crate::theme::WARNING)
@@ -122,45 +135,56 @@ fn render_model_row(
         crate::theme::BG_CARD
     };
 
-    egui::Frame::none()
+    // Current card gets a 1px accent-green border to match the selected state
+    // in the Figma reference.
+    let mut frame = egui::Frame::none()
         .fill(frame_color)
-        .inner_margin(egui::Margin::symmetric(12.0, 10.0))
-        .rounding(crate::theme::radius_lg())
-        .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                let radio = ui.radio(is_current, "");
-                if radio.clicked() && is_downloaded && !is_current {
-                    switch_model(model, &local_path, state);
-                }
+        .inner_margin(egui::Margin::symmetric(14.0, 12.0))
+        .rounding(crate::theme::radius_lg());
+    if is_current {
+        frame = frame.stroke(egui::Stroke::new(1.0, crate::theme::CURRENT));
+    }
 
-                ui.vertical(|ui| {
-                    render_header_row(ui, model, is_current, is_downloaded, remote, local_size);
-                    render_progress_row(
-                        ui,
-                        model,
-                        is_this_dl,
-                        has_partial,
-                        is_downloaded,
-                        dl_downloaded,
-                        dl_total,
-                        partial_size,
-                        local_size,
-                    );
-                    render_action_row(
-                        ui,
-                        model,
-                        state,
-                        is_this_dl,
-                        is_downloaded,
-                        is_current,
-                        has_partial,
-                        &local_path,
-                        &partial_path,
-                        dl_state_snap,
-                    );
-                });
+    frame.show(ui, |ui| {
+        // Force the row to span the full tab width — egui::Frame sizes to
+        // content by default, which made rows shrink-wrap.
+        ui.set_min_width(ui.available_width());
+        ui.horizontal(|ui| {
+            let radio = theme::radio_button(ui, is_current, crate::theme::ACCENT);
+            if radio.clicked() && is_downloaded && !is_current {
+                switch_model(model, &local_path, state);
+            }
+            ui.add_space(4.0);
+
+            ui.vertical(|ui| {
+                ui.set_min_width(ui.available_width());
+                render_header_row(ui, model, is_current, is_downloaded, remote, local_size);
+                render_progress_row(
+                    ui,
+                    model,
+                    is_this_dl,
+                    has_partial,
+                    is_downloaded,
+                    dl_downloaded,
+                    dl_total,
+                    partial_size,
+                    local_size,
+                );
+                render_action_row(
+                    ui,
+                    model,
+                    state,
+                    is_this_dl,
+                    is_downloaded,
+                    is_current,
+                    has_partial,
+                    &local_path,
+                    &partial_path,
+                    dl_state_snap,
+                );
             });
         });
+    });
 }
 
 fn render_header_row(
@@ -172,36 +196,67 @@ fn render_header_row(
     local_size: u64,
 ) {
     ui.horizontal(|ui| {
-        ui.strong(model.name);
         ui.label(
-            egui::RichText::new(format!("({} MB)", model.size_mb))
-                .small()
-                .weak(),
+            egui::RichText::new(model.name)
+                .color(crate::theme::TEXT_PRIMARY)
+                .strong(),
         );
-        ui.label(egui::RichText::new(model.desc).weak().small());
+        ui.label(
+            egui::RichText::new(format!("{} MB  ·  {}", model.size_mb, model.desc))
+                .color(crate::theme::TEXT_SECONDARY)
+                .small(),
+        );
 
         if is_current {
-            crate::theme::chip(
-                ui,
-                "✓ 当前使用",
-                egui::Color32::WHITE,
-                crate::theme::CURRENT,
-            );
+            // "当前使用" chip with a leading check icon, drawn in-frame so
+            // the icon matches the row's accent tone.
+            let frame = egui::Frame::none()
+                .fill(crate::theme::CURRENT)
+                .rounding(crate::theme::radius_sm())
+                .inner_margin(egui::Margin::symmetric(6.0, 2.0));
+            frame.show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 3.0;
+                    let (rect, _) = ui.allocate_exact_size(
+                        egui::vec2(12.0, 12.0),
+                        egui::Sense::hover(),
+                    );
+                    theme::draw_icon(ui.painter(), rect, Icon::Check, egui::Color32::WHITE);
+                    ui.label(
+                        egui::RichText::new("当前使用")
+                            .color(egui::Color32::WHITE)
+                            .size(crate::theme::FONT_SM),
+                    );
+                });
+            });
         }
 
         if let Some(remote_size) = remote {
             if is_downloaded {
                 if remote_size != local_size {
-                    crate::theme::chip(
-                        ui,
-                        "↑ 有更新",
-                        egui::Color32::BLACK,
-                        crate::theme::WARNING,
-                    );
+                    let frame = egui::Frame::none()
+                        .fill(crate::theme::WARNING)
+                        .rounding(crate::theme::radius_sm())
+                        .inner_margin(egui::Margin::symmetric(6.0, 2.0));
+                    frame.show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 3.0;
+                            let (rect, _) = ui.allocate_exact_size(
+                                egui::vec2(12.0, 12.0),
+                                egui::Sense::hover(),
+                            );
+                            theme::draw_icon(ui.painter(), rect, Icon::Up, egui::Color32::BLACK);
+                            ui.label(
+                                egui::RichText::new("有更新")
+                                    .color(egui::Color32::BLACK)
+                                    .size(crate::theme::FONT_SM),
+                            );
+                        });
+                    });
                 } else {
                     crate::theme::chip(
                         ui,
-                        "✓ 最新",
+                        "最新",
                         crate::theme::TEXT_SECONDARY,
                         crate::theme::BG_CARD_HOVER,
                     );
@@ -272,21 +327,21 @@ fn render_action_row(
     dl_state_snap: &Option<DlState>,
 ) {
     ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 6.0;
+        ui.spacing_mut().item_spacing.x = 16.0;
         if is_this_dl {
             let paused = matches!(dl_state_snap, Some(DlState::Paused));
             if paused {
-                if crate::theme::primary_button(ui, "▶ 继续").clicked() {
+                if theme::icon_link_button(ui, Icon::Play, "继续", crate::theme::ACCENT).clicked() {
                     start_model_download(model, state);
                 }
-            } else if crate::theme::ghost_button(ui, "⏸ 暂停", crate::theme::TEXT_PRIMARY)
+            } else if theme::icon_link_button(ui, Icon::Pause, "暂停", crate::theme::TEXT_PRIMARY)
                 .clicked()
             {
                 if let Some(dl) = &state.active_download {
                     let _ = dl.cmd_tx.send(DownloadCmd::Pause);
                 }
             }
-            if crate::theme::ghost_button(ui, "✕ 取消", crate::theme::DANGER_HOVER).clicked() {
+            if theme::icon_link_button(ui, Icon::X, "取消", crate::theme::DANGER_HOVER).clicked() {
                 if let Some(dl) = &state.active_download {
                     let _ = dl.cmd_tx.send(DownloadCmd::Cancel);
                 }
@@ -299,40 +354,61 @@ fn render_action_row(
                         .color(crate::theme::DANGER)
                         .small(),
                 );
-                if crate::theme::primary_button(ui, "重试").clicked() {
+                if theme::link_button(ui, "重试", crate::theme::ACCENT).clicked() {
                     state.active_download = None;
                     start_model_download(model, state);
                 }
             }
         } else {
             if !is_downloaded {
-                let btn_label = if has_partial { "▶ 继续下载" } else { "⬇ 下载" };
-                let enabled = state.active_download.is_none();
-                let resp = if enabled {
-                    crate::theme::primary_button(ui, btn_label)
+                let (icon, label) = if has_partial {
+                    (Icon::Play, "继续下载")
                 } else {
-                    crate::theme::ghost_button(ui, btn_label, crate::theme::TEXT_DISABLED)
+                    (Icon::Download, "下载")
                 };
+                let enabled = state.active_download.is_none();
+                let color = if enabled {
+                    crate::theme::ACCENT
+                } else {
+                    crate::theme::TEXT_DISABLED
+                };
+                let resp = theme::icon_link_button(ui, icon, label, color);
                 if enabled && resp.clicked() {
                     start_model_download(model, state);
                 }
                 if has_partial
-                    && crate::theme::ghost_button(ui, "✕ 删除进度", crate::theme::DANGER_HOVER)
-                        .clicked()
+                    && theme::icon_link_button(
+                        ui,
+                        Icon::X,
+                        "删除进度",
+                        crate::theme::DANGER_HOVER,
+                    )
+                    .clicked()
                 {
                     let _ = std::fs::remove_file(partial_path);
                 }
             }
 
             if is_downloaded && !is_current {
-                if crate::theme::primary_button(ui, "✓ 切换使用").clicked() {
+                if theme::icon_link_button(ui, Icon::Check, "切换使用", crate::theme::ACCENT)
+                    .clicked()
+                {
                     switch_model(model, local_path, state);
                 }
-                if crate::theme::ghost_button(ui, "🗑 删除", crate::theme::DANGER_HOVER)
+                if theme::icon_link_button(ui, Icon::Trash, "删除", crate::theme::DANGER_HOVER)
                     .clicked()
                 {
                     let _ = std::fs::remove_file(local_path);
                 }
+            }
+
+            // "删除" on the currently-selected card (user still needs a way
+            // to remove it if disk space matters). Same red link style.
+            if is_downloaded && is_current
+                && theme::icon_link_button(ui, Icon::Trash, "删除", crate::theme::DANGER_HOVER)
+                    .clicked()
+            {
+                let _ = std::fs::remove_file(local_path);
             }
         }
     });
