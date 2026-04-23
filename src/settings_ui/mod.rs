@@ -61,6 +61,8 @@ pub struct SettingsState {
     pub shared_transcription: Arc<Mutex<TranscriptionConfig>>,
     pub shared_position: Arc<Mutex<String>>,
     pub capture_active: Arc<AtomicBool>,
+    pub capture_slot: Arc<crate::hotkey::CaptureSlot>,
+    pub backend_info: Arc<crate::hotkey::BackendInfo>,
 
     pub audio_devices: Vec<String>,
     pub cache_dir: PathBuf,
@@ -80,6 +82,8 @@ impl SettingsState {
         shared_transcription: Arc<Mutex<TranscriptionConfig>>,
         shared_position: Arc<Mutex<String>>,
         capture_active: Arc<AtomicBool>,
+        capture_slot: Arc<crate::hotkey::CaptureSlot>,
+        backend_info: Arc<crate::hotkey::BackendInfo>,
         model_reload_tx: crossbeam_channel::Sender<PathBuf>,
     ) -> Self {
         let cache_dir = dirs::cache_dir()
@@ -104,6 +108,8 @@ impl SettingsState {
             shared_transcription,
             shared_position,
             capture_active,
+            capture_slot,
+            backend_info,
             audio_devices: crate::audio::input_device_names(),
             cache_dir,
             hf_repo: config.model.hf_repo.clone(),
@@ -253,11 +259,14 @@ fn render_title_bar(ui: &mut egui::Ui, ctx: &egui::Context) -> bool {
 fn render_tab_bar(ui: &mut egui::Ui, state: &mut SettingsState) {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 4.0;
+        // No emoji — Noto CJK doesn't contain SMP emoji codepoints, so they
+        // rendered as tofu. Plain-text labels with generous padding read
+        // better anyway.
         for (tab, label) in [
-            (Tab::Model, "🤖  模型"),
-            (Tab::Hotkey, "⌨  快捷键"),
-            (Tab::General, "⚙  常规"),
-            (Tab::History, "📜  历史记录"),
+            (Tab::Model, "模型"),
+            (Tab::Hotkey, "快捷键"),
+            (Tab::General, "常规"),
+            (Tab::History, "历史记录"),
         ] {
             let active = state.tab == tab;
             let (bg, fg) = if active {
@@ -272,7 +281,7 @@ fn render_tab_bar(ui: &mut egui::Ui, state: &mut SettingsState) {
             let btn = egui::Button::new(text)
                 .fill(bg)
                 .rounding(crate::theme::radius_md())
-                .min_size(egui::vec2(0.0, 30.0));
+                .min_size(egui::vec2(72.0, 30.0));
 
             if ui.add(btn).clicked() {
                 state.tab = tab;

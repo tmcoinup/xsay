@@ -6,12 +6,27 @@ use eframe::egui;
 use std::sync::atomic::Ordering;
 
 /// Top-level key capture handler, invoked each frame by the settings window.
-/// Only consumes events while `state.capturing` is true; rdev/evdev threads
-/// are suppressed via `capture_active` so they don't also fire.
+///
+/// Two capture paths run in parallel while `state.capturing` is true:
+///
+/// 1. **egui events** — works when the settings window has keyboard focus.
+///    Fast path (no extra lock contention), handles modifiers via the egui
+///    event's `modifiers` field directly.
+///
+/// 2. **hotkey thread via CaptureSlot** — works regardless of focus, using
+///    the OS-level rdev/evdev listener. Critical for keys the compositor
+///    eats before forwarding to our window (F-keys on some laptops, etc.)
+///    and for users on Wayland where the settings window's own keyboard
+///    handling may not deliver global-shortcut-style captures.
+///
+/// Whichever path fires first wins.
 pub fn handle_key_capture(ctx: &egui::Context, state: &mut SettingsState) {
     if !state.capturing {
         return;
     }
+
+    // Path 1: egui window-focused events
+    let mut captured_via_egui = false;
     ctx.input(|i| {
         for event in &i.events {
             if let egui::Event::Key {
@@ -22,8 +37,7 @@ pub fn handle_key_capture(ctx: &egui::Context, state: &mut SettingsState) {
             } = event
             {
                 if *key == egui::Key::Escape {
-                    state.capturing = false;
-                    state.capture_active.store(false, Ordering::SeqCst);
+                    end_capture(state);
                     return;
                 }
                 if let Some(name) = egui_key_to_rdev(*key) {
@@ -42,16 +56,40 @@ pub fn handle_key_capture(ctx: &egui::Context, state: &mut SettingsState) {
                         mods.push("super".to_string());
                     }
                     state.hotkey_mods = mods;
-                    state.capturing = false;
-                    state.capture_active.store(false, Ordering::SeqCst);
+                    captured_via_egui = true;
                 }
             }
         }
     });
+    if captured_via_egui {
+        end_capture(state);
+        return;
+    }
+
+    // Path 2: OS-level rdev/evdev capture slot
+    let captured = state.capture_slot.latest.lock().take();
+    if let Some((name, mods)) = captured {
+        if name == "__cancel__" {
+            end_capture(state);
+            return;
+        }
+        state.hotkey_key = name;
+        state.hotkey_mods = mods;
+        end_capture(state);
+    }
+}
+
+fn end_capture(state: &mut SettingsState) {
+    state.capturing = false;
+    state.capture_active.store(false, Ordering::SeqCst);
+    state.capture_slot.active.store(false, Ordering::SeqCst);
+    *state.capture_slot.latest.lock() = None;
 }
 
 pub fn render(ui: &mut egui::Ui, state: &mut SettingsState) {
-    ui.add_space(8.0);
+    ui.add_space(4.0);
+
+    render_backend_warning(ui, state);
 
     ui.group(|ui| {
         ui.label(egui::RichText::new("当前快捷键").strong());
@@ -89,6 +127,9 @@ pub fn render(ui: &mut egui::Ui, state: &mut SettingsState) {
         if btn.clicked() {
             state.capturing = !state.capturing;
             state.capture_active.store(state.capturing, Ordering::SeqCst);
+            state.capture_slot.active.store(state.capturing, Ordering::SeqCst);
+            // Clear any stale capture when starting or stopping.
+            *state.capture_slot.latest.lock() = None;
         }
     });
 
@@ -273,4 +314,78 @@ fn egui_key_to_rdev(key: egui::Key) -> Option<&'static str> {
         egui::Key::Z => Some("z"),
         _ => None,
     }
+}
+
+/// Show a colored banner describing the current hotkey backend status.
+/// The most important case: rdev on Wayland (falling back) means global
+/// shortcuts won't work in native-Wayland apps — we must tell the user how
+/// to fix it.
+fn render_backend_warning(ui: &mut egui::Ui, state: &SettingsState) {
+    use crate::hotkey::Backend;
+    let backend = state.backend_info.backend.lock().clone();
+    let Some(backend) = backend else {
+        return;
+    };
+
+    match backend {
+        Backend::RdevX11 => {
+            // No banner — everything works.
+        }
+        Backend::EvdevWayland { devices } => {
+            banner(
+                ui,
+                crate::theme::BG_CARD,
+                crate::theme::SUCCESS,
+                &format!(
+                    "✓ Wayland + evdev 后端已启用，监听 {} 个键盘设备。快捷键在任何窗口都有效。",
+                    devices
+                ),
+                None,
+            );
+        }
+        Backend::RdevWaylandFallback { evdev_error } => {
+            banner(
+                ui,
+                egui::Color32::from_rgb(0x5A, 0x2D, 0x14),
+                crate::theme::WARNING,
+                "⚠ Wayland 会话 + 只有 rdev 后端，快捷键仅在 X11 / XWayland 窗口有效，在原生 Wayland 应用中不会触发。",
+                Some(&format!(
+                    "解决方案一：执行 sudo usermod -aG input $USER，注销后重新登录，xsay 将自动切换到 evdev。\n\
+                     解决方案二：改用 X11 会话（登录界面选择 \"GNOME on Xorg\"）。\n\
+                     evdev 报错：{}",
+                    evdev_error
+                )),
+            );
+        }
+    }
+    ui.add_space(6.0);
+}
+
+fn banner(
+    ui: &mut egui::Ui,
+    bg: egui::Color32,
+    title_color: egui::Color32,
+    title: &str,
+    subline: Option<&str>,
+) {
+    egui::Frame::none()
+        .fill(bg)
+        .inner_margin(egui::Margin::symmetric(12.0, 10.0))
+        .rounding(crate::theme::radius_md())
+        .show(ui, |ui| {
+            ui.label(
+                egui::RichText::new(title)
+                    .color(title_color)
+                    .strong()
+                    .size(crate::theme::FONT_BODY),
+            );
+            if let Some(s) = subline {
+                ui.add_space(2.0);
+                ui.label(
+                    egui::RichText::new(s)
+                        .color(crate::theme::TEXT_SECONDARY)
+                        .size(crate::theme::FONT_SM),
+                );
+            }
+        });
 }

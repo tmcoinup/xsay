@@ -87,6 +87,8 @@ fn main() -> anyhow::Result<()> {
     let shared_transcription = Arc::new(Mutex::new(cfg.transcription.clone()));
     let shared_position = Arc::new(Mutex::new(cfg.overlay.position.clone()));
     let capture_active = Arc::new(AtomicBool::new(false));
+    let capture_slot = hotkey::CaptureSlot::new();
+    let backend_info = hotkey::BackendInfo::new();
 
     // Create all channels
     let (hotkey_tx, hotkey_rx) = crossbeam_channel::unbounded::<AppEvent>();
@@ -104,6 +106,8 @@ fn main() -> anyhow::Result<()> {
         hotkey_tx.clone(),
         Arc::clone(&shared_hotkey),
         Arc::clone(&capture_active),
+        Arc::clone(&capture_slot),
+        Arc::clone(&backend_info),
     );
     log::info!("Hotkey backend: {}", hotkey_backend);
 
@@ -171,6 +175,8 @@ fn main() -> anyhow::Result<()> {
                 shared_transcription,
                 shared_position,
                 capture_active,
+                capture_slot,
+                backend_info,
                 model_reload_tx,
             )))
         }),
@@ -326,7 +332,12 @@ fn spawn_hotkey_backend(
     hotkey_tx: crossbeam_channel::Sender<AppEvent>,
     shared_hotkey: Arc<Mutex<config::HotkeyConfig>>,
     capture_active: Arc<std::sync::atomic::AtomicBool>,
+    capture_slot: Arc<hotkey::CaptureSlot>,
+    backend_info: Arc<hotkey::BackendInfo>,
 ) -> &'static str {
+    #[cfg(target_os = "linux")]
+    let mut evdev_error: Option<String> = None;
+
     #[cfg(target_os = "linux")]
     {
         if hotkey_evdev::is_wayland_session() {
@@ -334,12 +345,15 @@ fn spawn_hotkey_backend(
                 hotkey_tx.clone(),
                 Arc::clone(&shared_hotkey),
                 Arc::clone(&capture_active),
+                Arc::clone(&capture_slot),
             ) {
                 Ok(n) => {
                     log::info!(
                         "Wayland detected. Using evdev for global hotkeys ({} keyboard(s))",
                         n
                     );
+                    *backend_info.backend.lock() =
+                        Some(hotkey::Backend::EvdevWayland { devices: n });
                     return "evdev (Wayland)";
                 }
                 Err(e) => {
@@ -349,12 +363,30 @@ fn spawn_hotkey_backend(
                         "   执行以下命令后重新登录（或重启）以生效：sudo usermod -aG input $USER"
                     );
                     eprintln!("   暂时回退到 rdev (仅 X11/XWayland 应用可用)");
+                    evdev_error = Some(e);
                 }
             }
         }
     }
 
-    std::thread::spawn(move || hotkey::run_hotkey_thread(hotkey_tx, shared_hotkey, capture_active));
+    std::thread::spawn(move || {
+        hotkey::run_hotkey_thread(hotkey_tx, shared_hotkey, capture_active, capture_slot)
+    });
+
+    #[cfg(target_os = "linux")]
+    {
+        *backend_info.backend.lock() = if hotkey_evdev::is_wayland_session() {
+            Some(hotkey::Backend::RdevWaylandFallback {
+                evdev_error: evdev_error.unwrap_or_default(),
+            })
+        } else {
+            Some(hotkey::Backend::RdevX11)
+        };
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        *backend_info.backend.lock() = Some(hotkey::Backend::RdevX11);
+    }
     "rdev (X11)"
 }
 

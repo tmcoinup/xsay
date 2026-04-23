@@ -15,6 +15,57 @@ pub enum AppEvent {
     EscapePressed,
 }
 
+/// Writable slot used by the settings UI to capture the next pressed key.
+///
+/// When `active = true`, the hotkey backend (rdev or evdev) writes the next
+/// key press it observes into `latest` *instead of* firing the normal
+/// recording logic. The UI polls `latest` each frame and applies it.
+///
+/// This is the OS-level capture path. The settings UI also has an egui
+/// event-based path that works while the settings window has keyboard focus;
+/// the two run in parallel and whichever fires first wins.
+#[derive(Debug, Default)]
+pub struct CaptureSlot {
+    pub active: AtomicBool,
+    /// (key_name, modifiers) captured by the global backend.
+    pub latest: Mutex<Option<(String, Vec<String>)>>,
+}
+
+impl CaptureSlot {
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self {
+            active: AtomicBool::new(false),
+            latest: Mutex::new(None),
+        })
+    }
+}
+
+/// Which backend ended up running, surfaced to the settings UI so it can
+/// warn the user when we're on Wayland with only rdev (i.e. global hotkeys
+/// won't capture native-Wayland application focus).
+#[derive(Debug, Clone, PartialEq)]
+pub enum Backend {
+    /// rdev on X11 (or macOS / Windows) — global shortcuts work.
+    RdevX11,
+    /// rdev falling back on Wayland — only sees XWayland keystrokes.
+    RdevWaylandFallback { evdev_error: String },
+    /// evdev direct — works on both X11 and Wayland.
+    EvdevWayland { devices: usize },
+}
+
+#[derive(Debug, Default)]
+pub struct BackendInfo {
+    pub backend: Mutex<Option<Backend>>,
+}
+
+impl BackendInfo {
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self {
+            backend: Mutex::new(None),
+        })
+    }
+}
+
 /// `shared_config` is read on every key event so hotkey changes take effect immediately.
 /// `capture_active` is set by the settings UI when capturing a new hotkey; while true,
 /// the hotkey fires are suppressed so rdev doesn't interfere with the egui key capture.
@@ -22,6 +73,7 @@ pub fn run_hotkey_thread(
     event_tx: Sender<AppEvent>,
     shared_config: Arc<Mutex<HotkeyConfig>>,
     capture_active: Arc<AtomicBool>,
+    capture_slot: Arc<CaptureSlot>,
 ) {
     // held_keys: which keys the OS currently reports as physically down (used
     // to filter auto-repeat — the OS sends repeated KeyPress without interleaved
@@ -36,6 +88,7 @@ pub fn run_hotkey_thread(
     let tx = event_tx;
     let cfg = shared_config;
     let capturing = capture_active;
+    let capture_slot = capture_slot;
 
     if let Err(e) = listen(move |event| {
         match event.event_type {
@@ -47,7 +100,13 @@ pub fn run_hotkey_thread(
                     was
                 };
 
+                // Capture mode: record the key into the slot (unless it's a
+                // bare modifier, which the user probably doesn't want as a
+                // standalone hotkey). Don't fire normal hotkey logic.
                 if capturing.load(Ordering::SeqCst) {
+                    if !already_down {
+                        record_capture(&key, &held_clone, &capture_slot);
+                    }
                     return;
                 }
 
@@ -187,4 +246,118 @@ fn parse_modifier(name: &str) -> Option<Key> {
         "super" | "meta" => Some(Key::MetaLeft),
         _ => None,
     }
+}
+
+/// Reverse of `parse_key` — turns an rdev Key into the string name we persist
+/// in config.toml. Returns None for keys we don't support as hotkeys (bare
+/// modifiers, media keys, unknown).
+fn rdev_key_to_name(key: &Key) -> Option<&'static str> {
+    Some(match key {
+        Key::F1 => "F1",
+        Key::F2 => "F2",
+        Key::F3 => "F3",
+        Key::F4 => "F4",
+        Key::F5 => "F5",
+        Key::F6 => "F6",
+        Key::F7 => "F7",
+        Key::F8 => "F8",
+        Key::F9 => "F9",
+        Key::F10 => "F10",
+        Key::F11 => "F11",
+        Key::F12 => "F12",
+        Key::CapsLock => "CapsLock",
+        Key::ScrollLock => "ScrollLock",
+        Key::Pause => "Pause",
+        Key::Home => "Home",
+        Key::End => "End",
+        Key::PageUp => "PageUp",
+        Key::PageDown => "PageDown",
+        Key::Delete => "Delete",
+        Key::Tab => "Tab",
+        Key::BackSlash => "BackSlash",
+        Key::AltGr => "RightAlt",
+        Key::Space => "Space",
+        Key::Return => "Return",
+        Key::PrintScreen => "PrintScreen",
+        Key::NumLock => "NumLock",
+        Key::KeyA => "a",
+        Key::KeyB => "b",
+        Key::KeyC => "c",
+        Key::KeyD => "d",
+        Key::KeyE => "e",
+        Key::KeyF => "f",
+        Key::KeyG => "g",
+        Key::KeyH => "h",
+        Key::KeyI => "i",
+        Key::KeyJ => "j",
+        Key::KeyK => "k",
+        Key::KeyL => "l",
+        Key::KeyM => "m",
+        Key::KeyN => "n",
+        Key::KeyO => "o",
+        Key::KeyP => "p",
+        Key::KeyQ => "q",
+        Key::KeyR => "r",
+        Key::KeyS => "s",
+        Key::KeyT => "t",
+        Key::KeyU => "u",
+        Key::KeyV => "v",
+        Key::KeyW => "w",
+        Key::KeyX => "x",
+        Key::KeyY => "y",
+        Key::KeyZ => "z",
+        _ => return None,
+    })
+}
+
+/// Write the captured key + currently held modifiers into the slot. Skipped
+/// for bare modifier presses (ctrl, shift, alt, etc.) and for keys we don't
+/// know how to name.
+fn record_capture(
+    key: &Key,
+    held: &Arc<Mutex<HashSet<Key>>>,
+    slot: &Arc<CaptureSlot>,
+) {
+    // Ignore bare modifiers — user is probably still composing the chord.
+    if matches!(
+        key,
+        Key::ControlLeft
+            | Key::ControlRight
+            | Key::ShiftLeft
+            | Key::ShiftRight
+            | Key::Alt
+            | Key::AltGr
+            | Key::MetaLeft
+            | Key::MetaRight
+    ) {
+        return;
+    }
+
+    // Escape cancels — stored as a sentinel we recognize in the UI layer.
+    if matches!(key, Key::Escape) {
+        *slot.latest.lock() = Some(("__cancel__".to_string(), Vec::new()));
+        return;
+    }
+
+    let Some(name) = rdev_key_to_name(key) else {
+        return;
+    };
+
+    let mut mods = Vec::new();
+    let held_snapshot = held.lock();
+    if held_snapshot.contains(&Key::ControlLeft) || held_snapshot.contains(&Key::ControlRight) {
+        mods.push("ctrl".to_string());
+    }
+    if held_snapshot.contains(&Key::Alt) {
+        mods.push("alt".to_string());
+    }
+    if held_snapshot.contains(&Key::ShiftLeft) || held_snapshot.contains(&Key::ShiftRight) {
+        mods.push("shift".to_string());
+    }
+    if held_snapshot.contains(&Key::MetaLeft) || held_snapshot.contains(&Key::MetaRight) {
+        mods.push("super".to_string());
+    }
+    drop(held_snapshot);
+
+    *slot.latest.lock() = Some((name.to_string(), mods));
 }

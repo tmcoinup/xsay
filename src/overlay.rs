@@ -37,6 +37,8 @@ impl XsayOverlay {
         shared_transcription: Arc<Mutex<TranscriptionConfig>>,
         shared_position: Arc<Mutex<String>>,
         capture_active: Arc<AtomicBool>,
+        capture_slot: Arc<crate::hotkey::CaptureSlot>,
+        backend_info: Arc<crate::hotkey::BackendInfo>,
         model_reload_tx: crossbeam_channel::Sender<std::path::PathBuf>,
     ) -> Self {
         let config = Config::load().unwrap_or_default();
@@ -48,6 +50,8 @@ impl XsayOverlay {
             shared_transcription,
             Arc::clone(&shared_position),
             capture_active,
+            capture_slot,
+            backend_info,
             model_reload_tx,
         );
         Self {

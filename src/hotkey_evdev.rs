@@ -3,7 +3,7 @@
 //! X11 and Wayland. Requires the user to be in the `input` group.
 
 use crate::config::HotkeyConfig;
-use crate::hotkey::AppEvent;
+use crate::hotkey::{AppEvent, CaptureSlot};
 use crossbeam_channel::Sender;
 use evdev::{Device, EventType, InputEvent, KeyCode as EvKey};
 use parking_lot::Mutex;
@@ -26,6 +26,7 @@ pub fn spawn_hotkey_threads(
     event_tx: Sender<AppEvent>,
     shared_config: Arc<Mutex<HotkeyConfig>>,
     capture_active: Arc<AtomicBool>,
+    capture_slot: Arc<CaptureSlot>,
 ) -> Result<usize, String> {
     let devices: Vec<_> = evdev::enumerate()
         .filter(|(_, dev)| {
@@ -51,6 +52,7 @@ pub fn spawn_hotkey_threads(
         let event_tx = event_tx.clone();
         let shared_config = Arc::clone(&shared_config);
         let capture_active = Arc::clone(&capture_active);
+        let capture_slot = Arc::clone(&capture_slot);
         let recording = Arc::clone(&recording);
         let held_keys = Arc::clone(&held_keys);
 
@@ -61,6 +63,7 @@ pub fn spawn_hotkey_threads(
                 event_tx,
                 shared_config,
                 capture_active,
+                capture_slot,
                 recording,
                 held_keys,
             );
@@ -75,6 +78,7 @@ fn run_device_loop(
     event_tx: Sender<AppEvent>,
     shared_config: Arc<Mutex<HotkeyConfig>>,
     capture_active: Arc<AtomicBool>,
+    capture_slot: Arc<CaptureSlot>,
     recording: Arc<AtomicBool>,
     held_keys: Arc<Mutex<HashSet<u16>>>,
 ) {
@@ -88,6 +92,7 @@ fn run_device_loop(
                             &event_tx,
                             &shared_config,
                             &capture_active,
+                            &capture_slot,
                             &recording,
                             &held_keys,
                         );
@@ -107,6 +112,7 @@ fn handle_key(
     event_tx: &Sender<AppEvent>,
     shared_config: &Arc<Mutex<HotkeyConfig>>,
     capture_active: &Arc<AtomicBool>,
+    capture_slot: &Arc<CaptureSlot>,
     recording: &Arc<AtomicBool>,
     held_keys: &Arc<Mutex<HashSet<u16>>>,
 ) {
@@ -127,7 +133,11 @@ fn handle_key(
         }
     }
 
+    // Capture mode: write to shared slot, don't fire normal hotkey logic.
     if capture_active.load(Ordering::SeqCst) {
+        if pressed {
+            record_capture_evdev(code, held_keys, capture_slot);
+        }
         return;
     }
 
@@ -238,4 +248,111 @@ fn modifier_to_evdev(name: &str) -> Option<u16> {
         _ => return None,
     };
     Some(k.code())
+}
+
+fn evdev_code_to_name(code: u16) -> Option<&'static str> {
+    let k = EvKey::new(code);
+    Some(match k {
+        k if k == EvKey::KEY_F1 => "F1",
+        k if k == EvKey::KEY_F2 => "F2",
+        k if k == EvKey::KEY_F3 => "F3",
+        k if k == EvKey::KEY_F4 => "F4",
+        k if k == EvKey::KEY_F5 => "F5",
+        k if k == EvKey::KEY_F6 => "F6",
+        k if k == EvKey::KEY_F7 => "F7",
+        k if k == EvKey::KEY_F8 => "F8",
+        k if k == EvKey::KEY_F9 => "F9",
+        k if k == EvKey::KEY_F10 => "F10",
+        k if k == EvKey::KEY_F11 => "F11",
+        k if k == EvKey::KEY_F12 => "F12",
+        k if k == EvKey::KEY_CAPSLOCK => "CapsLock",
+        k if k == EvKey::KEY_SCROLLLOCK => "ScrollLock",
+        k if k == EvKey::KEY_PAUSE => "Pause",
+        k if k == EvKey::KEY_HOME => "Home",
+        k if k == EvKey::KEY_END => "End",
+        k if k == EvKey::KEY_PAGEUP => "PageUp",
+        k if k == EvKey::KEY_PAGEDOWN => "PageDown",
+        k if k == EvKey::KEY_DELETE => "Delete",
+        k if k == EvKey::KEY_INSERT => "Insert",
+        k if k == EvKey::KEY_TAB => "Tab",
+        k if k == EvKey::KEY_SPACE => "Space",
+        k if k == EvKey::KEY_ENTER => "Return",
+        k if k == EvKey::KEY_SYSRQ => "PrintScreen",
+        k if k == EvKey::KEY_NUMLOCK => "NumLock",
+        k if k == EvKey::KEY_A => "a",
+        k if k == EvKey::KEY_B => "b",
+        k if k == EvKey::KEY_C => "c",
+        k if k == EvKey::KEY_D => "d",
+        k if k == EvKey::KEY_E => "e",
+        k if k == EvKey::KEY_F => "f",
+        k if k == EvKey::KEY_G => "g",
+        k if k == EvKey::KEY_H => "h",
+        k if k == EvKey::KEY_I => "i",
+        k if k == EvKey::KEY_J => "j",
+        k if k == EvKey::KEY_K => "k",
+        k if k == EvKey::KEY_L => "l",
+        k if k == EvKey::KEY_M => "m",
+        k if k == EvKey::KEY_N => "n",
+        k if k == EvKey::KEY_O => "o",
+        k if k == EvKey::KEY_P => "p",
+        k if k == EvKey::KEY_Q => "q",
+        k if k == EvKey::KEY_R => "r",
+        k if k == EvKey::KEY_S => "s",
+        k if k == EvKey::KEY_T => "t",
+        k if k == EvKey::KEY_U => "u",
+        k if k == EvKey::KEY_V => "v",
+        k if k == EvKey::KEY_W => "w",
+        k if k == EvKey::KEY_X => "x",
+        k if k == EvKey::KEY_Y => "y",
+        k if k == EvKey::KEY_Z => "z",
+        _ => return None,
+    })
+}
+
+fn record_capture_evdev(
+    code: u16,
+    held_keys: &Arc<Mutex<HashSet<u16>>>,
+    slot: &Arc<CaptureSlot>,
+) {
+    // Ignore bare modifier presses.
+    let mods_codes = [
+        EvKey::KEY_LEFTCTRL.code(),
+        EvKey::KEY_RIGHTCTRL.code(),
+        EvKey::KEY_LEFTSHIFT.code(),
+        EvKey::KEY_RIGHTSHIFT.code(),
+        EvKey::KEY_LEFTALT.code(),
+        EvKey::KEY_RIGHTALT.code(),
+        EvKey::KEY_LEFTMETA.code(),
+        EvKey::KEY_RIGHTMETA.code(),
+    ];
+    if mods_codes.contains(&code) {
+        return;
+    }
+
+    if code == EvKey::KEY_ESC.code() {
+        *slot.latest.lock() = Some(("__cancel__".to_string(), Vec::new()));
+        return;
+    }
+
+    let Some(name) = evdev_code_to_name(code) else {
+        return;
+    };
+
+    let mut mods = Vec::new();
+    let held = held_keys.lock();
+    if held.contains(&EvKey::KEY_LEFTCTRL.code()) || held.contains(&EvKey::KEY_RIGHTCTRL.code()) {
+        mods.push("ctrl".to_string());
+    }
+    if held.contains(&EvKey::KEY_LEFTALT.code()) || held.contains(&EvKey::KEY_RIGHTALT.code()) {
+        mods.push("alt".to_string());
+    }
+    if held.contains(&EvKey::KEY_LEFTSHIFT.code()) || held.contains(&EvKey::KEY_RIGHTSHIFT.code()) {
+        mods.push("shift".to_string());
+    }
+    if held.contains(&EvKey::KEY_LEFTMETA.code()) || held.contains(&EvKey::KEY_RIGHTMETA.code()) {
+        mods.push("super".to_string());
+    }
+    drop(held);
+
+    *slot.latest.lock() = Some((name.to_string(), mods));
 }
