@@ -2,10 +2,29 @@
 name = "xsay"
 version = "0.1.0"
 edition = "2024"
+description = "AI voice input tool — hold a hotkey to record, release to transcribe and type"
+license = "MIT"
+readme = "README.md"
 
 [[bin]]
 name = "xsay"
 path = "src/main.rs"
+
+[package.metadata.deb]
+maintainer = "mason"
+copyright = "2026, mason"
+extended-description = """\
+xsay captures microphone audio while a configurable hotkey is held \
+(or on tap-toggle), transcribes it offline with whisper.cpp, and types \
+the result into the focused window. Supports Chinese + English, Wayland \
+and X11 on Linux."""
+section = "utils"
+priority = "optional"
+depends = "libc6, libx11-6, libxtst6, libasound2, libgtk-3-0, libayatana-appindicator3-1 | libappindicator3-1, libxdo3"
+assets = [
+    ["target/release/xsay", "usr/bin/", "755"],
+    ["README.md", "usr/share/doc/xsay/README", "644"],
+]
 
 [dependencies]
 cpal = "0.15"
