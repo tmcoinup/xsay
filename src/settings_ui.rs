@@ -943,6 +943,48 @@ fn render_general_tab(ui: &mut egui::Ui, state: &mut SettingsState) {
             );
         });
 
+        // ----- 系统 -----
+        ui.group(|ui| {
+            ui.label(egui::RichText::new("系统").strong());
+            ui.add_space(4.0);
+
+            let mut autostart_on = crate::autostart::is_enabled();
+            let prev = autostart_on;
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut autostart_on, "开机自启动");
+                ui.label(
+                    egui::RichText::new("（登录后自动启动 xsay）")
+                        .weak()
+                        .small(),
+                );
+            });
+            if autostart_on != prev {
+                let result = if autostart_on {
+                    crate::autostart::enable()
+                } else {
+                    crate::autostart::disable()
+                };
+                match result {
+                    Ok(()) => {
+                        state.status_msg = Some((
+                            if autostart_on {
+                                "✓ 开机自启动已启用".to_string()
+                            } else {
+                                "✓ 开机自启动已关闭".to_string()
+                            },
+                            egui::Color32::from_rgb(80, 200, 80),
+                        ));
+                    }
+                    Err(e) => {
+                        state.status_msg = Some((
+                            format!("✗ 自启动设置失败: {}", e),
+                            egui::Color32::from_rgb(255, 120, 120),
+                        ));
+                    }
+                }
+            }
+        });
+
         // ----- 浮层 -----
         ui.group(|ui| {
             ui.label(egui::RichText::new("浮层").strong());

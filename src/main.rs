@@ -1,4 +1,5 @@
 mod audio;
+mod autostart;
 mod config;
 mod download;
 mod error;
