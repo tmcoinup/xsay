@@ -164,8 +164,8 @@ impl eframe::App for XsayOverlay {
                 egui::ViewportId::from_hash_of("xsay_settings"),
                 egui::ViewportBuilder::default()
                     .with_title("xsay 设置")
-                    .with_inner_size([640.0, 540.0])
-                    .with_min_inner_size([560.0, 420.0])
+                    .with_inner_size([820.0, 760.0])
+                    .with_min_inner_size([680.0, 560.0])
                     .with_resizable(true)
                     .with_decorations(false),
                 |ctx, _class| {
