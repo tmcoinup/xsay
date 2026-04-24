@@ -1,66 +1,81 @@
-//! SenseVoice Small offline ASR backend via sherpa-rs / sherpa-onnx.
+//! ONNX offline ASR backends via sherpa-rs / sherpa-onnx.
 //!
-//! Why: Whisper's Chinese accuracy on Large is middling and the model is
-//! heavy (3GB, slow on CPU). SenseVoice-Small is a 230MB ONNX int8 model
-//! that matches or beats Whisper-large on Chinese (trained on extra
-//! Mandarin, Cantonese, Japanese, Korean, English data at 40k hours) and
-//! runs ~7x faster on the same hardware because it's a non-autoregressive
-//! CTC decoder.
+//! Historically this file only wrapped SenseVoice; it now dispatches
+//! between multiple ONNX models that share sherpa-rs's C++ runtime. The
+//! file name is kept for git-history continuity even though the scope is
+//! broader — all backends here are invoked through the `transcribe()`
+//! entry point based on the backend id from config.
 //!
-//! Layout on disk (downloaded once, unpacked into cache_dir):
-//!   ~/.cache/xsay/models/sensevoice/
-//!     model.int8.onnx        — quantized model (~230 MB)
-//!     tokens.txt             — 27 k BPE vocab
+//! | backend id  | model                   | strengths                       |
+//! |-------------|-------------------------|---------------------------------|
+//! | sensevoice  | SenseVoice Small (阿里) | 多语言高精度，5x 快于 Whisper    |
+//! | paraformer  | Paraformer-zh (达摩院)  | 中文强项，非自回归，低延迟      |
 //!
-//! Feature-gated behind `sensevoice` so the default build stays whisper-
-//! only and doesn't pull the ~50MB sherpa-onnx shared library.
+//! All models live under ~/.cache/xsay/models/<backend>/ with the same
+//! two-file layout: model.int8.onnx + tokens.txt.
+//!
+//! Feature-gated behind `sensevoice` (historical name) so the default
+//! build stays whisper-only and doesn't pull the ~50MB sherpa-onnx lib.
 
 #![cfg(feature = "sensevoice")]
 
 use parking_lot::Mutex;
+use sherpa_rs::paraformer::{ParaformerConfig, ParaformerRecognizer};
 use sherpa_rs::sense_voice::{SenseVoiceConfig, SenseVoiceRecognizer};
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
-/// Thread-safe recognizer holder. SenseVoiceRecognizer is !Send on its
-/// own (C++ context pointer), so we gate it behind a Mutex. Inference is
-/// also serialized — running two decodes in parallel doesn't help anyway
-/// because the ONNX session itself manages its thread pool.
-static RECOGNIZER: LazyLock<Mutex<Option<SenseVoiceRecognizer>>> =
+// Separate recognizer holders so the ONNX sessions stay warm between
+// utterances. Both are lazy-initialized on first use — that's ~500ms of
+// model load that we don't want to pay every time. Mutex because both
+// SenseVoiceRecognizer and ParaformerRecognizer hold raw C pointers and
+// aren't Send on their own.
+static SENSEVOICE: LazyLock<Mutex<Option<SenseVoiceRecognizer>>> =
+    LazyLock::new(|| Mutex::new(None));
+static PARAFORMER: LazyLock<Mutex<Option<ParaformerRecognizer>>> =
     LazyLock::new(|| Mutex::new(None));
 
-/// Absolute path to the directory xsay unpacks SenseVoice into.
-pub fn model_dir() -> PathBuf {
+fn models_root() -> PathBuf {
     dirs::cache_dir()
         .unwrap_or_default()
         .join("xsay")
         .join("models")
-        .join("sensevoice")
 }
 
-/// True iff both `model.int8.onnx` and `tokens.txt` are present. Keeping
-/// the check cheap (just stat()s) so callers can poll it from UI without
-/// touching the heavy ONNX session.
-pub fn is_installed() -> bool {
-    let d = model_dir();
+pub fn sensevoice_dir() -> PathBuf {
+    models_root().join("sensevoice")
+}
+
+pub fn paraformer_dir() -> PathBuf {
+    models_root().join("paraformer")
+}
+
+/// Both installed models share the same file layout — model.int8.onnx +
+/// tokens.txt in a per-backend subdirectory. This lets `is_installed`
+/// stay a cheap two-stat check without touching the heavy ONNX session.
+pub fn is_installed(backend: &str) -> bool {
+    let d = match backend {
+        "sensevoice" => sensevoice_dir(),
+        "paraformer" => paraformer_dir(),
+        _ => return false,
+    };
     d.join("model.int8.onnx").is_file() && d.join("tokens.txt").is_file()
 }
 
-/// Recognizer configuration snapshot — everything we need to decide if
-/// the in-memory session can be reused or must be rebuilt.
 #[derive(Debug, Clone, PartialEq)]
-pub struct SenseVoiceOptions {
-    /// "auto" | "zh" | "en" | "ja" | "ko" | "yue"
+pub struct OnnxOptions {
+    /// "auto" | "zh" | "en" | "ja" | "ko" | "yue". Paraformer is
+    /// Chinese-only and ignores this field; SenseVoice uses it.
     pub language: String,
-    /// Add punctuation + numerals (inverse text normalization). Usually on.
+    /// Add punctuation + numerals (inverse text normalization).
+    /// SenseVoice only; Paraformer has ITN baked in.
     pub use_itn: bool,
-    /// Execution provider. "cpu" by default; "cuda" with sensevoice-cuda
-    /// feature enabled + NVIDIA GPU available.
+    /// "cpu" | "cuda".
     pub provider: String,
     pub num_threads: i32,
 }
 
-impl Default for SenseVoiceOptions {
+impl Default for OnnxOptions {
     fn default() -> Self {
         Self {
             language: "auto".into(),
@@ -71,27 +86,34 @@ impl Default for SenseVoiceOptions {
     }
 }
 
-/// Transcribe 16 kHz mono f32 samples to UTF-8 text. Returns None on
-/// model-unavailable / load failure so the caller can fall back to a
-/// different backend or surface an error to the user.
-///
-/// The recognizer is created lazily on first use and kept alive for the
-/// process lifetime. Subsequent calls skip the ~500ms session init.
-pub fn transcribe(samples: &[f32], opts: &SenseVoiceOptions) -> Option<String> {
+/// Transcribe 16 kHz mono f32 samples using the given ONNX backend.
+/// Returns `None` if the backend isn't known, the model isn't installed,
+/// or session init failed — callers fall back to Whisper.
+pub fn transcribe(backend: &str, samples: &[f32], opts: &OnnxOptions) -> Option<String> {
     if samples.is_empty() {
         return Some(String::new());
     }
-    if !is_installed() {
+    match backend {
+        "sensevoice" => transcribe_sensevoice(samples, opts),
+        "paraformer" => transcribe_paraformer(samples, opts),
+        other => {
+            log::warn!("unknown ONNX backend {:?}", other);
+            None
+        }
+    }
+}
+
+fn transcribe_sensevoice(samples: &[f32], opts: &OnnxOptions) -> Option<String> {
+    if !is_installed("sensevoice") {
         log::warn!(
             "SenseVoice model not found at {}",
-            model_dir().display()
+            sensevoice_dir().display()
         );
         return None;
     }
-
-    let mut guard = RECOGNIZER.lock();
+    let mut guard = SENSEVOICE.lock();
     if guard.is_none() {
-        match build_recognizer(opts) {
+        match build_sensevoice(opts) {
             Ok(r) => {
                 log::info!(
                     "SenseVoice recognizer ready (provider={}, threads={})",
@@ -111,8 +133,38 @@ pub fn transcribe(samples: &[f32], opts: &SenseVoiceOptions) -> Option<String> {
     Some(result.text)
 }
 
-fn build_recognizer(opts: &SenseVoiceOptions) -> Result<SenseVoiceRecognizer, String> {
-    let d = model_dir();
+fn transcribe_paraformer(samples: &[f32], opts: &OnnxOptions) -> Option<String> {
+    if !is_installed("paraformer") {
+        log::warn!(
+            "Paraformer model not found at {}",
+            paraformer_dir().display()
+        );
+        return None;
+    }
+    let mut guard = PARAFORMER.lock();
+    if guard.is_none() {
+        match build_paraformer(opts) {
+            Ok(r) => {
+                log::info!(
+                    "Paraformer recognizer ready (provider={}, threads={})",
+                    opts.provider,
+                    opts.num_threads
+                );
+                *guard = Some(r);
+            }
+            Err(e) => {
+                log::error!("Paraformer init failed: {}", e);
+                return None;
+            }
+        }
+    }
+    let recognizer = guard.as_mut().expect("just inserted");
+    let result = recognizer.transcribe(16000, samples);
+    Some(result.text)
+}
+
+fn build_sensevoice(opts: &OnnxOptions) -> Result<SenseVoiceRecognizer, String> {
+    let d = sensevoice_dir();
     let config = SenseVoiceConfig {
         model: path_str(&d.join("model.int8.onnx")),
         tokens: path_str(&d.join("tokens.txt")),
@@ -125,6 +177,18 @@ fn build_recognizer(opts: &SenseVoiceOptions) -> Result<SenseVoiceRecognizer, St
     // sherpa-rs returns eyre::Result, which isn't a direct dep — stringify
     // at this boundary so the rest of xsay doesn't need to pull eyre.
     SenseVoiceRecognizer::new(config).map_err(|e| e.to_string())
+}
+
+fn build_paraformer(opts: &OnnxOptions) -> Result<ParaformerRecognizer, String> {
+    let d = paraformer_dir();
+    let config = ParaformerConfig {
+        model: path_str(&d.join("model.int8.onnx")),
+        tokens: path_str(&d.join("tokens.txt")),
+        provider: Some(opts.provider.clone()),
+        num_threads: Some(opts.num_threads),
+        debug: false,
+    };
+    ParaformerRecognizer::new(config).map_err(|e| e.to_string())
 }
 
 fn path_str(p: &Path) -> String {

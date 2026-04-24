@@ -82,18 +82,19 @@ fn process_request(
         return;
     }
 
-    // Backend dispatch — pluggable so Whisper can coexist with SenseVoice
-    // and future ASR backends. Non-whisper backends are feature-gated;
-    // when the corresponding feature is off we fall through to Whisper
-    // rather than crashing, so a config with backend="sensevoice" on a
+    // Backend dispatch — pluggable so Whisper can coexist with ONNX-based
+    // backends (SenseVoice, Paraformer, ...). Non-whisper backends are
+    // feature-gated; when the feature is off we fall through to Whisper
+    // rather than crashing, so a config pointing at an ONNX backend on a
     // binary built without that feature still produces output.
-    if req.backend == "sensevoice" {
-        if try_sensevoice(&req, transcript_tx) {
+    if req.backend == "sensevoice" || req.backend == "paraformer" {
+        if try_onnx_backend(&req, transcript_tx) {
             return;
         }
         log::warn!(
-            "SenseVoice backend requested but unavailable (needs xsay built \
-             with --features sensevoice + model downloaded); falling back to Whisper"
+            "{} backend requested but unavailable (needs xsay built with \
+             --features sensevoice + model installed); falling back to Whisper",
+            req.backend
         );
     }
 
@@ -199,14 +200,13 @@ fn process_request(
     let _ = transcript_tx.send(TranscriptSeg { text });
 }
 
-/// SenseVoice dispatch. Returns `true` if we attempted the backend and
-/// produced output (success or empty silence filter applied) — caller
-/// should then skip the Whisper codepath. Returns `false` if the backend
-/// isn't compiled in or the model isn't installed, letting the caller
-/// fall back to Whisper.
+/// ONNX backend dispatch (SenseVoice, Paraformer). Returns `true` if we
+/// attempted the backend and produced output — caller should then skip
+/// the Whisper codepath. Returns `false` if the backend isn't compiled
+/// in or the model isn't installed, so the caller falls back to Whisper.
 #[cfg(any(feature = "sensevoice", feature = "sensevoice-cuda"))]
-fn try_sensevoice(req: &TranscribeReq, tx: &Sender<TranscriptSeg>) -> bool {
-    if !crate::sensevoice::is_installed() {
+fn try_onnx_backend(req: &TranscribeReq, tx: &Sender<TranscriptSeg>) -> bool {
+    if !crate::sensevoice::is_installed(&req.backend) {
         return false;
     }
     let provider = if cfg!(feature = "sensevoice-cuda") {
@@ -214,7 +214,7 @@ fn try_sensevoice(req: &TranscribeReq, tx: &Sender<TranscriptSeg>) -> bool {
     } else {
         "cpu".to_string()
     };
-    let opts = crate::sensevoice::SenseVoiceOptions {
+    let opts = crate::sensevoice::OnnxOptions {
         language: req.language.clone(),
         use_itn: true,
         provider,
@@ -222,22 +222,21 @@ fn try_sensevoice(req: &TranscribeReq, tx: &Sender<TranscriptSeg>) -> bool {
     };
     let secs = req.samples.len() as f32 / 16000.0;
     log::info!(
-        "SenseVoice start: {} samples ({:.2}s), lang={}, threads={}",
+        "{} start: {} samples ({:.2}s), lang={}, threads={}",
+        req.backend,
         req.samples.len(),
         secs,
         req.language,
         req.n_threads,
     );
     let start = std::time::Instant::now();
-    let Some(raw) = crate::sensevoice::transcribe(&req.samples, &opts) else {
+    let Some(raw) = crate::sensevoice::transcribe(&req.backend, &req.samples, &opts) else {
         return false;
     };
-    log::info!("SenseVoice done in {:?}", start.elapsed());
-    // SenseVoice output sometimes prefixes language/emotion markers like
-    // "<|zh|><|NEUTRAL|><|Speech|><|withitn|>". Strip anything between
-    // angle brackets before passing through the shared hallucination
-    // filter.
-    let cleaned = strip_sensevoice_markers(&raw);
+    log::info!("{} done in {:?}", req.backend, start.elapsed());
+    // Strip SenseVoice-style <|language|>/<|emotion|> markers. Paraformer
+    // doesn't emit these so the scan is a no-op — cheap either way.
+    let cleaned = strip_markers(&raw);
     let trimmed = cleaned.trim();
     if trimmed.is_empty() || is_silence_marker(trimmed) {
         let _ = tx.send(TranscriptSeg { text: String::new() });
@@ -250,15 +249,15 @@ fn try_sensevoice(req: &TranscribeReq, tx: &Sender<TranscriptSeg>) -> bool {
 }
 
 #[cfg(not(any(feature = "sensevoice", feature = "sensevoice-cuda")))]
-fn try_sensevoice(_req: &TranscribeReq, _tx: &Sender<TranscriptSeg>) -> bool {
+fn try_onnx_backend(_req: &TranscribeReq, _tx: &Sender<TranscriptSeg>) -> bool {
     false
 }
 
 #[cfg(any(feature = "sensevoice", feature = "sensevoice-cuda"))]
-fn strip_sensevoice_markers(s: &str) -> String {
+fn strip_markers(s: &str) -> String {
     // Cheap left-to-right scan: drop everything between '<' and '>'
-    // (inclusive). We don't need a real XML parser — SenseVoice only
-    // emits single-token markers, never nested.
+    // (inclusive). We don't need a real XML parser — SenseVoice emits
+    // single-token markers, never nested.
     let mut out = String::with_capacity(s.len());
     let mut in_tag = false;
     for c in s.chars() {

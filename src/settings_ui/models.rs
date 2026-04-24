@@ -87,4 +87,14 @@ pub static MODELS: &[ModelInfo] = &[
             "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/\
              sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17.tar.bz2",
     },
+    ModelInfo {
+        name: "Paraformer-zh",
+        filename: "paraformer",
+        size_mb: 950,
+        desc: "达摩院中文专用，非自回归 CTC 解码，低延迟。仅中文，内置 ITN（标点 + 数字）",
+        backend: "paraformer",
+        archive_url:
+            "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/\
+             sherpa-onnx-paraformer-zh-2024-03-09.tar.bz2",
+    },
 ];
