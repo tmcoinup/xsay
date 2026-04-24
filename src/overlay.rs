@@ -69,52 +69,26 @@ impl XsayOverlay {
             backend_info,
             model_reload_tx,
         );
-        // First-run auto-open: if no model is installed yet, pop the
-        // settings window on startup so the user sees the model picker
-        // without having to find the tray icon first. Subsequent runs
-        // (with a model present) stay quiet and just park in the tray.
-        let no_model_installed = !any_model_installed(&settings.cache_dir);
+        // Settings is xsay's main UI. Show it at startup every time, so
+        // the app behaves like a conventional desktop application: user
+        // launches, sees the settings window, can close it (red dot) to
+        // hide into the tray. The actual recording overlay is a separate
+        // 120×120 transparent feedback widget that only has content
+        // during an active utterance.
         Self {
             shared_state,
             animation_phase: 0.0,
             dots_phase: 0.0,
             was_idle: true,
-            show_settings: no_model_installed,
+            show_settings: true,
             settings,
-            settings_focus_requested: no_model_installed,
+            settings_focus_requested: true,
             settings_centered: false,
             shared_position,
             last_positioned_size: egui::vec2(0.0, 0.0),
             last_positioned_corner: String::new(),
         }
     }
-}
-
-/// Probe the cache dir for any Whisper .bin file or sherpa ONNX model
-/// directory. Cheap stat()s — used at startup to decide whether to
-/// auto-show the settings window.
-fn any_model_installed(cache_dir: &std::path::Path) -> bool {
-    let Ok(entries) = std::fs::read_dir(cache_dir) else {
-        return false;
-    };
-    for e in entries.flatten() {
-        let p = e.path();
-        if p.is_file() {
-            if p.file_name()
-                .and_then(|n| n.to_str())
-                .map(|n| n.starts_with("ggml-") && n.ends_with(".bin"))
-                .unwrap_or(false)
-            {
-                return true;
-            }
-        } else if p.is_dir() {
-            // Sherpa layout: <cache>/<backend>/model*.onnx + tokens.txt
-            if p.join("tokens.txt").is_file() {
-                return true;
-            }
-        }
-    }
-    false
 }
 
 fn compute_corner_position(monitor: egui::Vec2, window: egui::Vec2, corner: &str) -> egui::Pos2 {
