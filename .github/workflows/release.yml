@@ -1,0 +1,92 @@
+name: release
+
+# Build xsay binaries for each supported (OS, GPU-backend) combination on a
+# version tag (`v*`) and attach them to the matching GitHub Release.
+# Manual dispatch is also wired so you can test-drive the workflow without
+# cutting a tag.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write  # needed to upload release assets
+
+jobs:
+  build:
+    name: ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # Don't abort other builds just because one GPU variant's toolchain
+      # is missing from the runner image — a CPU binary is always useful.
+      fail-fast: false
+      matrix:
+        include:
+          # Linux — CPU (works everywhere, primary download).
+          - os: ubuntu-22.04
+            label: linux-x64-cpu
+            features: ""
+            apt: "libx11-dev libxtst-dev libasound2-dev libgtk-3-dev libayatana-appindicator3-dev libxdo-dev cmake pkg-config"
+          # Linux — Vulkan (cross-vendor GPU, NVIDIA/AMD/Intel).
+          - os: ubuntu-22.04
+            label: linux-x64-vulkan
+            features: "vulkan"
+            apt: "libx11-dev libxtst-dev libasound2-dev libgtk-3-dev libayatana-appindicator3-dev libxdo-dev libvulkan-dev glslang-tools cmake pkg-config"
+          # macOS — Metal (Apple GPU acceleration, bundled with OS).
+          - os: macos-14
+            label: macos-arm64-metal
+            features: "metal"
+            apt: ""
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux build deps
+        if: runner.os == 'Linux' && matrix.apt != ''
+        run: |
+          sudo apt-get update
+          # shellcheck disable=SC2086
+          sudo apt-get install -y ${{ matrix.apt }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo + target
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ${{ matrix.label }}
+
+      - name: Build
+        shell: bash
+        run: |
+          if [ -n "${{ matrix.features }}" ]; then
+            cargo build --release --features ${{ matrix.features }}
+          else
+            cargo build --release
+          fi
+
+      - name: Stage artifact
+        shell: bash
+        run: |
+          mkdir -p dist
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            cp "target/release/xsay.exe" "dist/xsay-${{ matrix.label }}.exe"
+          else
+            cp "target/release/xsay" "dist/xsay-${{ matrix.label }}"
+            strip "dist/xsay-${{ matrix.label }}" || true
+          fi
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: xsay-${{ matrix.label }}
+          path: dist/xsay-${{ matrix.label }}*
+          if-no-files-found: error
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/xsay-${{ matrix.label }}*

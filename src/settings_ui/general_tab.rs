@@ -37,11 +37,10 @@ pub fn render(ui: &mut egui::Ui, state: &mut SettingsState) {
                 }
             }
 
-            state.status_msg =
-                Some(("已保存并生效".to_string(), crate::theme::SUCCESS));
+            state.set_status("已保存并生效", crate::theme::SUCCESS);
         }
 
-        if let Some((msg, color)) = &state.status_msg {
+        if let Some((msg, color, _)) = &state.status_msg {
             ui.add_space(4.0);
             ui.label(
                 egui::RichText::new(msg)
@@ -90,6 +89,10 @@ fn render_transcription_card(
                     }
                 });
         });
+        theme::helper_text(
+            ui,
+            "自动检测就能处理中英混说（如 \"这个 API 怎么 deploy\"），一般保持默认",
+        );
 
         ui.add_space(6.0);
         ui.horizontal(|ui| {
@@ -98,11 +101,20 @@ fn render_transcription_card(
                 *changed = true;
             }
             ui.add_space(2.0);
-            ui.label(
-                egui::RichText::new("翻译为英文输出")
-                    .color(crate::theme::TEXT_PRIMARY)
-                    .size(crate::theme::FONT_BODY),
-            );
+            ui.vertical(|ui| {
+                ui.label(
+                    egui::RichText::new("翻译为英文输出")
+                        .color(crate::theme::TEXT_PRIMARY)
+                        .size(crate::theme::FONT_BODY),
+                );
+                ui.label(
+                    egui::RichText::new(
+                        "勾选后不论说什么语言都强制输出英文。中文用户通常不勾",
+                    )
+                    .color(crate::theme::TEXT_SECONDARY)
+                    .size(crate::theme::FONT_SM),
+                );
+            });
         });
 
         ui.add_space(6.0);
@@ -153,6 +165,46 @@ fn render_injection_card(
             }
         });
         theme::helper_text(ui, "中文等 CJK 字符请选剪贴板方式；慢设备可调大延迟。");
+
+        // Paste shortcut selector — Wayland auto-paste via uinput has to
+        // know which key combo the target app expects. Terminals and CLI
+        // tools (Claude Code, Codex) use Ctrl+Shift+V; most GUI apps use
+        // Ctrl+V; "both" sends both with a short delay for mixed usage.
+        ui.add_space(6.0);
+        theme::form_row(ui, "粘贴快捷键", |ui| {
+            ui.vertical(|ui| {
+                let options: &[(&str, &str, &str)] = &[
+                    ("ctrl-v", "Ctrl + V", "GUI 文本框（浏览器、编辑器）"),
+                    ("ctrl-shift-v", "Ctrl + Shift + V", "终端 / Claude Code / Codex CLI"),
+                    ("both", "两者都试", "兼容最广，但部分应用会弹出\"粘贴特殊\"对话框"),
+                ];
+                for (code, title, subtitle) in options {
+                    let selected = inj.paste_shortcut == *code;
+                    ui.horizontal(|ui| {
+                        if theme::radio_button(ui, selected, crate::theme::ACCENT).clicked()
+                            && !selected
+                        {
+                            inj.paste_shortcut = code.to_string();
+                            *changed = true;
+                        }
+                        ui.add_space(4.0);
+                        ui.vertical(|ui| {
+                            ui.label(
+                                egui::RichText::new(*title)
+                                    .color(crate::theme::TEXT_PRIMARY)
+                                    .size(crate::theme::FONT_BODY),
+                            );
+                            ui.label(
+                                egui::RichText::new(*subtitle)
+                                    .color(crate::theme::TEXT_SECONDARY)
+                                    .size(crate::theme::FONT_SM),
+                            );
+                        });
+                    });
+                    ui.add_space(2.0);
+                }
+            });
+        });
     });
 }
 
@@ -266,20 +318,20 @@ fn render_system_card(ui: &mut egui::Ui, state: &mut SettingsState) {
             };
             match result {
                 Ok(()) => {
-                    state.status_msg = Some((
+                    state.set_status(
                         if autostart_on {
-                            "开机自启动已启用".to_string()
+                            "开机自启动已启用"
                         } else {
-                            "开机自启动已关闭".to_string()
+                            "开机自启动已关闭"
                         },
                         crate::theme::SUCCESS,
-                    ));
+                    );
                 }
                 Err(e) => {
-                    state.status_msg = Some((
+                    state.set_status(
                         format!("自启动设置失败：{}", e),
                         crate::theme::DANGER_HOVER,
-                    ));
+                    );
                 }
             }
         }
@@ -290,10 +342,12 @@ fn render_overlay_card(ui: &mut egui::Ui, state: &SettingsState) {
     theme::section_card(ui, "浮层位置", |ui| {
         let positions: &[(&str, &str, Icon)] = &[
             ("top-left", "左上角", Icon::Box),
+            ("top-center", "顶部居中", Icon::Box),
             ("top-right", "右上角", Icon::Box),
             ("bottom-left", "左下角", Icon::Box),
+            ("bottom-center", "底部居中", Icon::Box),
             ("bottom-right", "右下角", Icon::Box),
-            ("center", "居中", Icon::Box),
+            ("center", "屏幕正中", Icon::Box),
         ];
         let current_code = state.shared_position.lock().clone();
 

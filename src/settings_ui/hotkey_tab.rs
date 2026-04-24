@@ -1,4 +1,6 @@
-//! 快捷键标签页：捕获新按键、编辑修饰键、选择触发模式（按住/切换）。
+//! 快捷键标签页：捕获新按键、选择触发模式（按住/切换）。
+//!
+//! 捕获到新快捷键或切换模式时立即写入磁盘 —— 没有单独的「保存」按钮。
 
 use super::SettingsState;
 use crate::config::Config;
@@ -20,7 +22,8 @@ use std::sync::atomic::Ordering;
 ///    and for users on Wayland where the settings window's own keyboard
 ///    handling may not deliver global-shortcut-style captures.
 ///
-/// Whichever path fires first wins.
+/// Whichever path fires first wins. On success we immediately persist the
+/// new hotkey (auto-save) and show a status toast.
 pub fn handle_key_capture(ctx: &egui::Context, state: &mut SettingsState) {
     if !state.capturing {
         return;
@@ -53,7 +56,11 @@ pub fn handle_key_capture(ctx: &egui::Context, state: &mut SettingsState) {
                     if modifiers.shift {
                         mods.push("shift".to_string());
                     }
-                    if modifiers.mac_cmd || modifiers.command {
+                    // On Linux/Windows, `mac_cmd` is the Super/Meta key.
+                    // `command` maps to Ctrl on those platforms, so don't use
+                    // it — that was the bug where pressing Ctrl+Z would
+                    // falsely add "super" to the captured combo.
+                    if modifiers.mac_cmd {
                         mods.push("super".to_string());
                     }
                     state.hotkey_mods = mods;
@@ -64,6 +71,7 @@ pub fn handle_key_capture(ctx: &egui::Context, state: &mut SettingsState) {
     });
     if captured_via_egui {
         end_capture(state);
+        save_hotkey_now(state);
         return;
     }
 
@@ -77,6 +85,7 @@ pub fn handle_key_capture(ctx: &egui::Context, state: &mut SettingsState) {
         state.hotkey_key = name;
         state.hotkey_mods = mods;
         end_capture(state);
+        save_hotkey_now(state);
     }
 }
 
@@ -87,17 +96,54 @@ fn end_capture(state: &mut SettingsState) {
     *state.capture_slot.latest.lock() = None;
 }
 
+/// Persist the current hotkey selection to the shared worker state and to
+/// config.toml, then show a success toast. Called after a successful capture
+/// and after a mode radio click.
+fn save_hotkey_now(state: &mut SettingsState) {
+    {
+        let mut hk = state.shared_hotkey.lock();
+        hk.key = state.hotkey_key.clone();
+        hk.modifiers = state.hotkey_mods.clone();
+        hk.mode = state.hotkey_mode.clone();
+    }
+    if let Ok(mut cfg) = Config::load() {
+        cfg.hotkey.key = state.hotkey_key.clone();
+        cfg.hotkey.modifiers = state.hotkey_mods.clone();
+        cfg.hotkey.mode = state.hotkey_mode.clone();
+        if let Ok(path) = Config::config_path() {
+            if let Ok(text) = toml::to_string_pretty(&cfg) {
+                let _ = std::fs::write(path, text);
+            }
+        }
+    }
+    let mode_label = if state.hotkey_mode == "toggle" {
+        "点按切换"
+    } else {
+        "按住说话"
+    };
+    let mut parts: Vec<String> = state.hotkey_mods.iter().map(|m| pretty_mod(m)).collect();
+    parts.push(pretty_key(&state.hotkey_key));
+    let combo = parts.join(" + ");
+    state.set_status(
+        format!("快捷键已更新为 {}（{}）", combo, mode_label),
+        crate::theme::SUCCESS,
+    );
+}
+
 pub fn render(ui: &mut egui::Ui, state: &mut SettingsState) {
     egui::ScrollArea::vertical().show(ui, |ui| {
         ui.spacing_mut().item_spacing.y = 10.0;
 
         render_backend_warning(ui, state);
+        // External-trigger card ("xsay toggle" + GNOME custom shortcut) is
+        // Unix-only — it relies on the IPC module, which uses Unix sockets.
+        #[cfg(unix)]
+        render_external_trigger_card(ui, state);
         render_current_card(ui, state);
         render_capture_card(ui, state);
         render_mode_card(ui, state);
-        render_save_card(ui, state);
 
-        if let Some((msg, color)) = &state.status_msg {
+        if let Some((msg, color, _)) = &state.status_msg {
             ui.add_space(4.0);
             ui.label(
                 egui::RichText::new(msg)
@@ -105,6 +151,66 @@ pub fn render(ui: &mut egui::Ui, state: &mut SettingsState) {
                     .size(crate::theme::FONT_SM),
             );
         }
+    });
+}
+
+/// External-trigger card: Flameshot-style. User binds a system shortcut to
+/// the xsay binary + "toggle"; we show that exact command plus a copy
+/// button plus a brief howto. Placed above the in-app capture card because
+/// it's more reliable on Wayland (no /dev/input access required). Unix-only.
+///
+/// The displayed command uses `std::env::current_exe()` rather than a bare
+/// "xsay toggle" because GNOME Custom Shortcuts don't inherit the user's
+/// shell PATH — if xsay isn't in /usr/local/bin or ~/.local/bin the bare
+/// form fails silently. An absolute path always works.
+#[cfg(unix)]
+fn render_external_trigger_card(ui: &mut egui::Ui, state: &mut SettingsState) {
+    theme::section_card(ui, "外部触发（推荐）", |ui| {
+        ui.label(
+            egui::RichText::new("在系统快捷键中调用命令，兼容 X11 / Wayland，组合键不受限。")
+                .color(crate::theme::TEXT_SECONDARY)
+                .size(crate::theme::FONT_SM),
+        );
+        ui.add_space(6.0);
+
+        let exe = std::env::current_exe()
+            .ok()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "xsay".to_string());
+        let command = format!("{} toggle", exe);
+
+        // Command pill with a copy action on the right. Monospace so the
+        // shell command is visually distinct from Chinese copy around it.
+        // Let the pill wrap inside the available width so long absolute
+        // paths (target/debug/xsay) don't push the copy button off-screen.
+        ui.horizontal(|ui| {
+            egui::Frame::new()
+                .fill(crate::theme::BG_CARD_HOVER)
+                .corner_radius(crate::theme::radius_sm())
+                .inner_margin(egui::Margin::symmetric(10, 6))
+                .show(ui, |ui| {
+                    ui.label(
+                        egui::RichText::new(&command)
+                            .color(crate::theme::TEXT_PRIMARY)
+                            .monospace()
+                            .size(crate::theme::FONT_SM),
+                    );
+                });
+            if theme::icon_link_button(ui, Icon::Check, "复制命令", crate::theme::ACCENT)
+                .clicked()
+            {
+                ui.ctx().copy_text(command.clone());
+                state.set_status("命令已复制到剪贴板", crate::theme::SUCCESS);
+            }
+        });
+
+        ui.add_space(6.0);
+        theme::helper_text(
+            ui,
+            "配置步骤：系统设置 → 键盘 → 自定义快捷键 → 新建\n\
+             名称任取，命令粘贴上面那行，快捷键按你喜欢的组合（如 Super+Z）。\n\
+             按下后切换录音，再按一次或停顿 1.5 秒自动识别。",
+        );
     });
 }
 
@@ -191,44 +297,49 @@ fn pretty_key(name: &str) -> String {
 
 fn render_capture_card(ui: &mut egui::Ui, state: &mut SettingsState) {
     theme::section_card(ui, "设置新按键", |ui| {
-        theme::form_row(ui, "快捷键", |ui| {
-            let (icon, label, color) = if state.capturing {
-                (Icon::Keyboard, "请按下目标按键...", crate::theme::WARNING)
-            } else {
-                (Icon::Keyboard, "捕捉按键", crate::theme::ACCENT)
-            };
-            if theme::icon_link_button(ui, icon, label, color).clicked() {
-                state.capturing = !state.capturing;
-                state
-                    .capture_active
-                    .store(state.capturing, Ordering::SeqCst);
-                state
-                    .capture_slot
-                    .active
-                    .store(state.capturing, Ordering::SeqCst);
-                *state.capture_slot.latest.lock() = None;
-            }
-        });
+        let (icon, label, color) = if state.capturing {
+            (Icon::Keyboard, "请按下目标按键...", crate::theme::WARNING)
+        } else {
+            (Icon::Keyboard, "捕捉按键", crate::theme::ACCENT)
+        };
+        if theme::outlined_button(ui, icon, label, color, false).clicked() {
+            state.capturing = !state.capturing;
+            state
+                .capture_active
+                .store(state.capturing, Ordering::SeqCst);
+            state
+                .capture_slot
+                .active
+                .store(state.capturing, Ordering::SeqCst);
+            *state.capture_slot.latest.lock() = None;
+        }
         if state.capturing {
             theme::helper_text(
                 ui,
                 "支持 F1–F12、Home/End/PageUp/PageDown、字母键等。按 Esc 取消。",
             );
+        } else {
+            theme::helper_text(ui, "按下后捕获任意组合键，会自动保存。");
         }
 
-        ui.add_space(4.0);
-        theme::form_row(ui, "或直接输入", |ui| {
-            ui.add(
-                egui::TextEdit::singleline(&mut state.hotkey_key)
-                    .desired_width(140.0)
-                    .font(egui::TextStyle::Monospace),
-            );
+        // Wayland + rdev fallback silently drops Super key presses. Warn in
+        // the capture card itself so users don't wonder why Super+Z produces
+        // only "Z" — the banner at the top of the tab is easy to miss when
+        // they're focused on the button.
+        if matches!(
+            state.backend_info.backend.lock().clone(),
+            Some(crate::hotkey::Backend::RdevWaylandFallback { .. })
+        ) {
+            ui.add_space(2.0);
             ui.label(
-                egui::RichText::new("如 Pause / ScrollLock / CapsLock")
-                    .color(crate::theme::TEXT_SECONDARY)
-                    .size(crate::theme::FONT_SM),
+                egui::RichText::new(
+                    "⚠ 当前 Wayland 回退后端无法捕获 Super 键。执行 \
+                     sudo usermod -aG input $USER 并重新登录后即可使用 Super 组合。",
+                )
+                .color(crate::theme::WARNING)
+                .size(crate::theme::FONT_SM),
             );
-        });
+        }
     });
 }
 
@@ -249,8 +360,9 @@ fn render_mode_row(
 ) {
     let selected = state.hotkey_mode == value;
     ui.horizontal(|ui| {
-        if theme::radio_button(ui, selected, crate::theme::ACCENT).clicked() {
+        if theme::radio_button(ui, selected, crate::theme::ACCENT).clicked() && !selected {
             state.hotkey_mode = value.to_string();
+            save_hotkey_now(state);
         }
         ui.add_space(4.0);
         ui.vertical(|ui| {
@@ -265,64 +377,6 @@ fn render_mode_row(
                     .size(crate::theme::FONT_SM),
             );
         });
-    });
-}
-
-fn render_save_card(ui: &mut egui::Ui, state: &mut SettingsState) {
-    let (saved_key, saved_mods, saved_mode) = {
-        let hk = state.shared_hotkey.lock();
-        (hk.key.clone(), hk.modifiers.clone(), hk.mode.clone())
-    };
-    let changed = state.hotkey_key != saved_key
-        || state.hotkey_mods != saved_mods
-        || state.hotkey_mode != saved_mode;
-
-    ui.horizontal(|ui| {
-        let save_color = if changed {
-            crate::theme::ACCENT
-        } else {
-            crate::theme::TEXT_DISABLED
-        };
-        let resp = theme::icon_link_button(ui, Icon::Check, "保存快捷键", save_color);
-        if changed && resp.clicked() {
-            {
-                let mut hk = state.shared_hotkey.lock();
-                hk.key = state.hotkey_key.clone();
-                hk.modifiers = state.hotkey_mods.clone();
-                hk.mode = state.hotkey_mode.clone();
-            }
-            if let Ok(mut cfg) = Config::load() {
-                cfg.hotkey.key = state.hotkey_key.clone();
-                cfg.hotkey.modifiers = state.hotkey_mods.clone();
-                cfg.hotkey.mode = state.hotkey_mode.clone();
-                if let Ok(path) = Config::config_path() {
-                    if let Ok(text) = toml::to_string_pretty(&cfg) {
-                        let _ = std::fs::write(path, text);
-                    }
-                }
-            }
-            let mode_label = if state.hotkey_mode == "toggle" {
-                "点按切换"
-            } else {
-                "按住说话"
-            };
-            state.status_msg = Some((
-                format!("快捷键已更新为 {}（{}）", state.hotkey_key, mode_label),
-                crate::theme::SUCCESS,
-            ));
-        }
-
-        let revert_color = if changed {
-            crate::theme::DANGER_HOVER
-        } else {
-            crate::theme::TEXT_DISABLED
-        };
-        let rresp = theme::icon_link_button(ui, Icon::X, "还原", revert_color);
-        if changed && rresp.clicked() {
-            state.hotkey_key = saved_key;
-            state.hotkey_mods = saved_mods;
-            state.hotkey_mode = saved_mode;
-        }
     });
 }
 

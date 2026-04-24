@@ -9,10 +9,18 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 pub fn render(ui: &mut egui::Ui, state: &mut SettingsState) {
-    let current_filename = Config::load()
-        .ok()
-        .map(|c| c.model.hf_filename)
-        .unwrap_or_default();
+    // Only re-read config.toml when something upstream marked the cache
+    // dirty (first render, tab re-entry, download completion, switch). The
+    // previous unconditional Config::load() every frame was a contributor
+    // to the "window not responding" UI-thread stalls under CPU load.
+    if state.current_model_dirty {
+        state.current_model_cache = Config::load()
+            .ok()
+            .map(|c| c.model.hf_filename)
+            .unwrap_or_default();
+        state.current_model_dirty = false;
+    }
+    let current_filename = state.current_model_cache.clone();
 
     let active_dl_filename = state.active_download.as_ref().map(|d| d.filename.clone());
 
@@ -74,7 +82,7 @@ pub fn render(ui: &mut egui::Ui, state: &mut SettingsState) {
             }
         });
 
-        if let Some((msg, color)) = &state.status_msg {
+        if let Some((msg, color, _)) = &state.status_msg {
             ui.add_space(6.0);
             ui.label(egui::RichText::new(msg).color(*color));
         }
@@ -442,15 +450,16 @@ fn handle_download_completion(
                     persist_config(&c);
                 }
                 let _ = state.model_reload_tx.send(downloaded_path);
-                state.status_msg = Some((
+                state.current_model_dirty = true;
+                state.set_status(
                     format!("✓ {} 下载完成并已启用", nice_name),
                     crate::theme::SUCCESS,
-                ));
+                );
             } else {
-                state.status_msg = Some((
+                state.set_status(
                     format!("✓ {} 下载完成", nice_name),
                     crate::theme::SUCCESS,
-                ));
+                );
             }
         }
         state.active_download = None;
@@ -504,10 +513,11 @@ fn switch_model(model: &ModelInfo, local_path: &PathBuf, state: &mut SettingsSta
         persist_config(&cfg);
     }
     let _ = state.model_reload_tx.send(local_path.clone());
-    state.status_msg = Some((
+    state.current_model_dirty = true;
+    state.set_status(
         format!("✓ 已切换到 {} 模型（后台加载中）", model.name),
         crate::theme::SUCCESS,
-    ));
+    );
 }
 
 fn check_all_updates(state: &mut SettingsState) {

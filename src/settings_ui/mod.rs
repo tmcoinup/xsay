@@ -27,7 +27,7 @@ pub struct ActiveDownload {
     pub cmd_tx: Sender<DownloadCmd>,
 }
 
-#[derive(PartialEq)]
+#[derive(Copy, Clone, PartialEq, Eq)]
 pub enum Tab {
     Model,
     Hotkey,
@@ -69,7 +69,36 @@ pub struct SettingsState {
     pub hf_repo: String,
     pub model_reload_tx: crossbeam_channel::Sender<PathBuf>,
 
-    pub status_msg: Option<(String, egui::Color32)>,
+    /// Cached history entries. Populated lazily by `history_tab::render`
+    /// the first time the tab is viewed (and after a refresh). Reading the
+    /// JSONL file every frame was starving the UI thread under CPU load,
+    /// making GNOME mark the window as unresponsive.
+    pub history_cache: Vec<crate::history::HistoryEntry>,
+    /// Set to true when the cache needs to be rebuilt from disk (on first
+    /// render, tab switch back to History, or after clear).
+    pub history_dirty: bool,
+    /// Last tab rendered. Used to detect re-entry into a tab so we can
+    /// invalidate the corresponding cache and pick up changes made outside.
+    pub last_tab: Option<Tab>,
+    /// Cached `hf_filename` of the currently selected model. Avoids
+    /// re-reading config.toml every frame while the Model tab is active.
+    pub current_model_cache: String,
+    pub current_model_dirty: bool,
+
+    /// (message, color, set-at). Auto-clears 5s after `set_at` so bottom-of-
+    /// window toasts don't linger indefinitely. Use `set_status()` to record
+    /// new messages so the timestamp is filled in correctly.
+    pub status_msg: Option<(String, egui::Color32, std::time::Instant)>,
+}
+
+/// Toast duration — how long a status message stays visible before expiring.
+pub const STATUS_TTL: std::time::Duration = std::time::Duration::from_secs(5);
+
+impl SettingsState {
+    /// Record a status message that will auto-expire after `STATUS_TTL`.
+    pub fn set_status(&mut self, text: impl Into<String>, color: egui::Color32) {
+        self.status_msg = Some((text.into(), color, std::time::Instant::now()));
+    }
 }
 
 impl SettingsState {
@@ -115,6 +144,11 @@ impl SettingsState {
             hf_repo: config.model.hf_repo.clone(),
             model_reload_tx,
             status_msg: None,
+            history_cache: Vec::new(),
+            history_dirty: true,
+            last_tab: None,
+            current_model_cache: config.model.hf_filename.clone(),
+            current_model_dirty: false,
         }
     }
 }
@@ -127,6 +161,18 @@ pub fn render(ctx: &egui::Context, state: &mut SettingsState) -> bool {
     if !state.fonts_installed {
         crate::fonts::install(ctx);
         state.fonts_installed = true;
+    }
+
+    // Expire stale status toasts + schedule a repaint when one is pending so
+    // the UI actually removes it on time (egui otherwise only repaints on
+    // user input).
+    if let Some((_, _, set_at)) = &state.status_msg {
+        let elapsed = set_at.elapsed();
+        if elapsed >= STATUS_TTL {
+            state.status_msg = None;
+        } else {
+            ctx.request_repaint_after(STATUS_TTL - elapsed);
+        }
     }
 
     // Drain remote update-check results — the checker spawns one thread per
@@ -142,6 +188,18 @@ pub fn render(ctx: &egui::Context, state: &mut SettingsState) -> bool {
 
     // Key capture runs at the top level so it works regardless of active tab.
     hotkey_tab::handle_key_capture(ctx, state);
+
+    // Detect re-entry into a tab and invalidate its cache so changes made
+    // outside (or by another viewing) are picked up. Also initializes
+    // `last_tab` on the very first render.
+    if state.last_tab != Some(state.tab) {
+        match state.tab {
+            Tab::History => state.history_dirty = true,
+            Tab::Model => state.current_model_dirty = true,
+            _ => {}
+        }
+        state.last_tab = Some(state.tab);
+    }
 
     let mut close_requested = false;
 

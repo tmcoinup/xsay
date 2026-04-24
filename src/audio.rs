@@ -130,6 +130,11 @@ pub fn run_audio_thread(
     let mut accumulator: Vec<f32> = Vec::new();
     let mut silent_chunks: u32 = 0;
     let mut recording_start = std::time::Instant::now();
+    // Peak RMS observed during the current recording session. Printed on
+    // Stop/Pause so a quick log scan tells the user whether the mic is
+    // actually picking up sound (values under ~0.005 almost always mean the
+    // wrong input device or a muted/disconnected mic).
+    let mut peak_rms: f32 = 0.0;
 
     loop {
         // Check for commands (non-blocking)
@@ -138,6 +143,7 @@ pub fn run_audio_thread(
                 AudioCmd::StartRecording => {
                     accumulator.clear();
                     silent_chunks = 0;
+                    peak_rms = 0.0;
                     recording = true;
                     recording_start = std::time::Instant::now();
                     if let Err(e) = stream.play() {
@@ -148,7 +154,12 @@ pub fn run_audio_thread(
                 AudioCmd::StopRecording => {
                     recording = false;
                     let _ = stream.pause();
-                    log::debug!("Recording stopped, {} samples", accumulator.len());
+                    log::info!(
+                        "Recording stopped: {} samples, peak RMS {:.4} ({})",
+                        accumulator.len(),
+                        peak_rms,
+                        rms_hint(peak_rms),
+                    );
                     let samples = std::mem::take(&mut accumulator);
                     let _ = chunk_tx.send(AudioChunk {
                         samples,
@@ -204,6 +215,9 @@ pub fn run_audio_thread(
 
             // Check RMS of this chunk for silence detection
             let chunk_rms = rms(&resampled);
+            if chunk_rms > peak_rms {
+                peak_rms = chunk_rms;
+            }
             if chunk_rms < cfg.silence_threshold {
                 silent_chunks += 1;
             } else {
@@ -270,4 +284,19 @@ fn rms(samples: &[f32]) -> f32 {
     }
     let sum_sq: f32 = samples.iter().map(|s| s * s).sum();
     (sum_sq / samples.len() as f32).sqrt()
+}
+
+/// Human-readable diagnostic for a recording's peak RMS. Thresholds chosen
+/// by eye from observed normal-speech levels on a laptop mic (~0.05–0.15)
+/// and the default `silence_threshold = 0.01`.
+fn rms_hint(peak: f32) -> &'static str {
+    if peak < 0.002 {
+        "几乎无信号 — 麦克风可能未工作或选错设备"
+    } else if peak < 0.01 {
+        "极弱 — 低于静音阈值，Whisper 会输出空白"
+    } else if peak < 0.03 {
+        "偏弱 — 靠近麦克风或提高增益"
+    } else {
+        "正常"
+    }
 }

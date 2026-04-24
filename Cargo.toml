@@ -52,3 +52,29 @@ libc = "0.2"
 [target.'cfg(target_os = "linux")'.dependencies]
 evdev = "0.13"
 gtk = "0.18"
+# Same winit version eframe 0.34 transitively pulls in. Needed so we can
+# force the GUI event loop onto X11 (XWayland) — GNOME/mutter ignores the
+# Wayland protocol extensions we rely on for positioning a transparent
+# always-on-top overlay, so `OuterPosition` lands in the wrong place.
+winit = "0.30"
+
+# Optional GPU acceleration. Default build = CPU only, works on any machine
+# without system dependencies beyond what's already required. Enthusiasts
+# and GPU-owning users can opt in via `--features <name>`:
+#
+#   cuda     NVIDIA + CUDA toolkit installed        (cargo build --release --features cuda)
+#   vulkan   cross-vendor, NVIDIA/AMD/Intel         (cargo build --release --features vulkan)
+#   metal    macOS Apple Silicon / Intel with Metal (cargo build --release --features metal)
+#   hipblas  AMD + ROCm toolkit                     (cargo build --release --features hipblas)
+#   coreml   macOS CoreML neural engine             (cargo build --release --features coreml)
+#
+# Only pick one — they are mutually exclusive at the whisper-rs-sys build
+# level (the C++ side links one GGML backend). `build.sh` wraps the common
+# permutations into a single-command release workflow.
+[features]
+default = []
+cuda = ["whisper-rs/cuda"]
+vulkan = ["whisper-rs/vulkan"]
+metal = ["whisper-rs/metal"]
+hipblas = ["whisper-rs/hipblas"]
+coreml = ["whisper-rs/coreml"]

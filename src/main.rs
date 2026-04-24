@@ -9,6 +9,8 @@ mod hotkey;
 #[cfg(target_os = "linux")]
 mod hotkey_evdev;
 mod inject;
+#[cfg(unix)]
+mod ipc;
 mod model;
 mod overlay;
 mod settings_ui;
@@ -58,6 +60,19 @@ fn main() -> anyhow::Result<()> {
             let cfg = Config::load()?;
             let path = model::ensure_model(&cfg.model)?;
             println!("Model ready at: {}", path.display());
+            return Ok(());
+        }
+        // Flameshot-style IPC subcommands: short-lived invocations that
+        // connect to the running daemon and trigger an action. This is the
+        // recommended way to wire hotkeys on Wayland (bind
+        // `xsay toggle` in GNOME Custom Shortcuts). Unix-only — Windows
+        // doesn't have std::os::unix::net and wouldn't compile the module.
+        #[cfg(unix)]
+        "toggle" | "cancel" => {
+            if let Err(e) = ipc::send_command(cmd) {
+                eprintln!("{}", e);
+                std::process::exit(1);
+            }
             return Ok(());
         }
         _ => {}
@@ -111,6 +126,13 @@ fn main() -> anyhow::Result<()> {
     );
     log::info!("Hotkey backend: {}", hotkey_backend);
 
+    // IPC socket for `xsay toggle` / `xsay cancel` — lets users bind a
+    // system-level shortcut (GNOME Custom Shortcuts, etc.) that spawns our
+    // CLI, which hands the command to this daemon. Works regardless of
+    // Wayland/X11 and doesn't need /dev/input access. Unix-only.
+    #[cfg(unix)]
+    ipc::spawn_server(hotkey_tx.clone(), Arc::clone(&shared_state));
+
     {
         let aud = Arc::clone(&shared_audio);
         std::thread::spawn(move || audio::run_audio_thread(audio_cmd_rx, audio_chunk_tx, aud));
@@ -161,7 +183,37 @@ fn main() -> anyhow::Result<()> {
     );
 
     // Overlay on main thread (required by macOS and Windows)
-    let native_options = overlay::build_native_options(&cfg.overlay);
+    let mut native_options = overlay::build_native_options(&cfg.overlay);
+
+    // On Linux + Wayland, GNOME/mutter silently ignores the Wayland protocol
+    // extensions we rely on for positioning a transparent always-on-top
+    // overlay — the feedback widget lands wherever the compositor decides
+    // (usually top-left) instead of the configured corner. Force the GUI
+    // event loop onto X11 so OuterPosition commands actually take effect.
+    // Other subsystems (evdev, arboard, notify-send, the injection path)
+    // keep reading WAYLAND_DISPLAY and run on their native Wayland code
+    // paths — only eframe's window system is forced to XWayland.
+    //
+    // Override with `XSAY_GUI=wayland` for users on wlroots compositors
+    // where OuterPosition actually works.
+    #[cfg(target_os = "linux")]
+    {
+        use winit::platform::x11::EventLoopBuilderExtX11;
+        let force_wayland = std::env::var("XSAY_GUI")
+            .map(|v| v == "wayland")
+            .unwrap_or(false);
+        if !force_wayland {
+            native_options.event_loop_builder =
+                Some(Box::new(|builder| {
+                    builder.with_x11();
+                }));
+            log::info!(
+                "GUI: forcing X11 (XWayland) for accurate overlay positioning. \
+                 Override with XSAY_GUI=wayland."
+            );
+        }
+    }
+
     eframe::run_native(
         "xsay",
         native_options,
@@ -277,6 +329,17 @@ fn handle_audio_chunk(
     if should_transcribe && !chunk.samples.is_empty() {
         // Minimum length check: at least 0.5s of audio at 16kHz
         if chunk.samples.len() >= 8000 {
+            // Backpressure: if Whisper is slow (Medium/Large on CPU) the
+            // pause-triggered chunks pile up faster than they're consumed.
+            // Drop new pause chunks when anything is already in flight —
+            // the final chunk on key-release always goes through.
+            if chunk.triggered_by_pause && transcribe_req_tx.len() > 0 {
+                log::debug!(
+                    "Transcribe queue backed up ({} pending); dropping pause chunk",
+                    transcribe_req_tx.len()
+                );
+                return;
+            }
             let snap = tx_cfg.lock().clone();
             let _ = transcribe_req_tx.send(TranscribeReq {
                 samples: chunk.samples,
@@ -306,26 +369,44 @@ fn handle_transcript(
 ) {
     let state = shared_state.lock().clone();
 
-    // Only inject if we're in a transcribing or still recording (pause-triggered) state
-    if matches!(state, AppState::Transcribing | AppState::Recording { .. }) {
-        let text = seg.text.trim().to_string();
-        if text.is_empty() {
-            let mut s = shared_state.lock();
-            if matches!(*s, AppState::Transcribing) {
-                *s = AppState::Idle;
-            }
-            return;
-        }
-
-        history::append(&text);
-
-        {
-            let mut s = shared_state.lock();
-            *s = AppState::Injecting;
-        }
-        let _ = inject_tx.send(InjectCmd::Type(text));
-        log::debug!("State → Injecting");
+    // Drop transcripts only when the user has explicitly canceled (Idle).
+    // In every other state (Recording with pause-trigger mid-session,
+    // Transcribing on key release, Injecting while a previous part is
+    // still being pasted) we want to queue this segment for injection —
+    // a long dictation produces multiple chunks and they must all reach
+    // the focused window in order. Previously we guarded with
+    // `Transcribing | Recording` which silently dropped every segment
+    // after the first one.
+    if matches!(state, AppState::Idle) {
+        return;
     }
+
+    let text = seg.text.trim().to_string();
+    if text.is_empty() {
+        // No text to inject. If nothing is currently injecting, return to
+        // Idle so a subsequent hotkey press starts a fresh session.
+        let mut s = shared_state.lock();
+        if matches!(*s, AppState::Transcribing) {
+            *s = AppState::Idle;
+        }
+        return;
+    }
+
+    history::append(&text);
+
+    // Transition to Injecting only if we're not already there — avoids a
+    // redundant write that would stomp an in-progress Injecting state and
+    // confuse the inject_done_rx handler's Idle flip.
+    {
+        let mut s = shared_state.lock();
+        if !matches!(*s, AppState::Injecting) {
+            *s = AppState::Injecting;
+            log::debug!("State → Injecting");
+        } else {
+            log::debug!("Queuing additional inject while previous still running");
+        }
+    }
+    let _ = inject_tx.send(InjectCmd::Type(text));
 }
 
 fn spawn_hotkey_backend(
@@ -398,6 +479,11 @@ fn print_help() {
     println!();
     println!("OPTIONS:");
     println!("  (no args)          Start xsay (hold hotkey to record)");
+    #[cfg(unix)]
+    {
+        println!("  toggle             Toggle recording on the running daemon (for custom shortcuts)");
+        println!("  cancel             Abort an in-flight session on the running daemon");
+    }
     println!("  --download-model   Download the Whisper model and exit");
     println!("  --list-devices     List available audio input devices");
     println!("  --config           Print config file path");
@@ -405,4 +491,11 @@ fn print_help() {
     println!();
     println!("CONFIG:");
     println!("  Edit ~/.config/xsay/config.toml to customize hotkey, model, etc.");
+    #[cfg(unix)]
+    {
+        println!();
+        println!("CUSTOM SHORTCUTS (推荐):");
+        println!("  GNOME: Settings → Keyboard → Custom Shortcuts, 命令填 `xsay toggle`");
+        println!("  绑定任意组合键（Super+Z 等），由系统派发，跨 X11/Wayland 都可用。");
+    }
 }

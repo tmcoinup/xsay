@@ -15,10 +15,25 @@ pub struct XsayOverlay {
     shared_state: SharedState,
     animation_phase: f32,
     dots_phase: f32,
+    /// Previous frame's idle-ness, so we can detect the Idle → active
+    /// transition and re-assert always-on-top + focus. Some compositors
+    /// (GNOME under X11 focus-stealing-prevention, KWin) quietly drop
+    /// the initial ABOVE hint when the window becomes visible, letting
+    /// other windows cover our feedback badge.
+    was_idle: bool,
 
     // Settings window
     show_settings: bool,
     settings: SettingsState,
+    /// True for exactly one frame after the tray or a keyboard-invoked
+    /// action asks to show settings. We translate it into a Focus +
+    /// OuterPosition command on the nested viewport so an already-open but
+    /// occluded window comes back to the foreground.
+    settings_focus_requested: bool,
+    /// Whether we've centered the settings viewport since it was (re-)opened.
+    /// Reset when the window is closed so re-open re-centers once rather
+    /// than snapping on every frame.
+    settings_centered: bool,
 
     // Viewport positioning — configured corner (shared with settings UI so
     // changes re-anchor immediately) + last applied size to detect changes.
@@ -58,8 +73,11 @@ impl XsayOverlay {
             shared_state,
             animation_phase: 0.0,
             dots_phase: 0.0,
+            was_idle: true,
             show_settings: false,
             settings,
+            settings_focus_requested: false,
+            settings_centered: false,
             shared_position,
             last_positioned_size: egui::vec2(0.0, 0.0),
             last_positioned_corner: String::new(),
@@ -68,20 +86,32 @@ impl XsayOverlay {
 }
 
 fn compute_corner_position(monitor: egui::Vec2, window: egui::Vec2, corner: &str) -> egui::Pos2 {
-    let margin = 20.0;
+    // Top and side margins are cosmetic — 20px keeps the widget clear of
+    // the top panel without wasting screen. Bottom margin is larger
+    // because many desktop environments (Ubuntu's bottom dock, KDE's
+    // default taskbar, macOS Dock) park a 60-80px tall strip at the
+    // bottom that the widget would otherwise be hidden behind.
+    let side_margin = 20.0;
+    let bottom_margin = 88.0;
+    let top_margin = 20.0;
     match corner {
-        "top-left" => egui::pos2(margin, margin),
-        "bottom-left" => egui::pos2(margin, monitor.y - window.y - margin),
+        "top-left" => egui::pos2(side_margin, top_margin),
+        "top-center" => egui::pos2((monitor.x - window.x) * 0.5, top_margin),
+        "bottom-left" => egui::pos2(side_margin, monitor.y - window.y - bottom_margin),
         "bottom-right" => egui::pos2(
-            monitor.x - window.x - margin,
-            monitor.y - window.y - margin,
+            monitor.x - window.x - side_margin,
+            monitor.y - window.y - bottom_margin,
+        ),
+        "bottom-center" => egui::pos2(
+            (monitor.x - window.x) * 0.5,
+            monitor.y - window.y - bottom_margin,
         ),
         "center" => egui::pos2(
             (monitor.x - window.x) * 0.5,
             (monitor.y - window.y) * 0.5,
         ),
         // "top-right" and fallback
-        _ => egui::pos2(monitor.x - window.x - margin, margin),
+        _ => egui::pos2(monitor.x - window.x - side_margin, top_margin),
     }
 }
 
@@ -96,7 +126,14 @@ impl eframe::App for XsayOverlay {
         // Handle tray menu events
         for action in tray::poll_events() {
             match action {
-                TrayAction::ShowSettings => self.show_settings = true,
+                TrayAction::ShowSettings => {
+                    // If the settings viewport is already open but
+                    // obscured, setting show_settings=true alone has no
+                    // effect. Raise a flag the settings viewport callback
+                    // reads next frame to send a Focus command.
+                    self.show_settings = true;
+                    self.settings_focus_requested = true;
+                }
                 TrayAction::Quit => {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
@@ -107,11 +144,28 @@ impl eframe::App for XsayOverlay {
 
         ctx.request_repaint_after(Duration::from_millis(33));
 
-        // Idle = main viewport hidden entirely (no desktop badge). User opens
-        // the settings window through the tray menu. Recording/Transcribing/
-        // Injecting bring the overlay back as a 120×120 feedback widget.
+        // Keep main viewport always alive. Previously we sent
+        // Visible(false) in Idle to hide the overlay, but that crashed
+        // egui with "user callback was never called" when the tray
+        // opened the nested settings viewport while we were hidden —
+        // show_viewport_immediate requires a live parent. Instead we
+        // leave the viewport present but paint nothing in Idle state,
+        // which combined with transparent + mouse_passthrough = an
+        // invisible no-op window that doesn't disturb the user.
         let is_idle = matches!(state, AppState::Idle);
-        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(!is_idle));
+
+        // Detect Idle → active transition. On becoming active, explicitly
+        // re-assert AlwaysOnTop — the `with_always_on_top()` builder hint
+        // is honored at creation, but some compositors drop the ABOVE hint
+        // over time. Without this the feedback badge can end up behind
+        // the user's active window or a notification toast.
+        let became_active = self.was_idle && !is_idle;
+        if became_active {
+            ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(
+                egui::WindowLevel::AlwaysOnTop,
+            ));
+        }
+        self.was_idle = is_idle;
 
         let target_size = egui::vec2(120.0, 120.0);
 
@@ -155,20 +209,63 @@ impl eframe::App for XsayOverlay {
             }
         }
 
-        // Settings window (separate viewport)
+        // Settings window (separate viewport). Centered on first open each
+        // session, re-raised to foreground when the user asks again via
+        // tray (handles the "window obscured behind another" case).
         if self.show_settings {
+            let inner_size = egui::vec2(700.0, 660.0);
+            // Compute a monitor-center position to use on initial creation.
+            // egui only applies `with_position` once per viewport lifetime;
+            // subsequent re-shows need an explicit OuterPosition command,
+            // which we send below when the centering flag is reset.
+            let center_pos = ctx
+                .input(|i| i.viewport().monitor_size)
+                .filter(|m| m.x > 0.0 && m.y > 0.0)
+                .map(|m| {
+                    egui::pos2(
+                        ((m.x - inner_size.x) * 0.5).max(0.0),
+                        ((m.y - inner_size.y) * 0.5).max(0.0),
+                    )
+                });
+
+            let mut builder = egui::ViewportBuilder::default()
+                .with_title("xsay 设置")
+                .with_inner_size([inner_size.x, inner_size.y])
+                .with_min_inner_size([640.0, 540.0])
+                .with_resizable(true)
+                .with_decorations(false);
+            if let Some(p) = center_pos {
+                builder = builder.with_position(p);
+            }
+
             let show_ref = &mut self.show_settings;
             let settings_ref = &mut self.settings;
+            let focus_req = std::mem::take(&mut self.settings_focus_requested);
+            let needs_recenter = !self.settings_centered;
+            self.settings_centered = true;
 
             ctx.show_viewport_immediate(
                 egui::ViewportId::from_hash_of("xsay_settings"),
-                egui::ViewportBuilder::default()
-                    .with_title("xsay 设置")
-                    .with_inner_size([700.0, 660.0])
-                    .with_min_inner_size([640.0, 540.0])
-                    .with_resizable(true)
-                    .with_decorations(false),
+                builder,
                 |ctx, _class| {
+                    // On (re-)open, move to screen center explicitly —
+                    // with_position alone only applies to the first-ever
+                    // creation; a reopen would otherwise land wherever the
+                    // user last moved it, which can be offscreen.
+                    if needs_recenter {
+                        if let Some(p) = center_pos {
+                            ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(p));
+                        }
+                    }
+                    // Tray "Show Settings" while the window is already
+                    // open → restore from minimized + raise to foreground
+                    // + focus. Using only Focus doesn't un-minimize on most
+                    // compositors, leaving the tray click looking broken.
+                    if focus_req {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                    }
                     if ctx.input(|i| i.viewport().close_requested()) {
                         *show_ref = false;
                     }
@@ -177,6 +274,9 @@ impl eframe::App for XsayOverlay {
                     }
                 },
             );
+        } else {
+            // Reset the "centered" flag so the NEXT open re-centers once.
+            self.settings_centered = false;
         }
     }
 
@@ -289,6 +389,11 @@ pub fn build_native_options(_config: &crate::config::OverlayConfig) -> eframe::N
     // based on AppState.
     eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
+            // Title + app_id so GNOME shows "xsay" in its "not responding"
+            // prompts and task switcher instead of "Unknown". Also helps
+            // the compositor group this window with the tray icon.
+            .with_title("xsay")
+            .with_app_id("xsay")
             .with_decorations(false)
             .with_transparent(true)
             .with_always_on_top()

@@ -67,6 +67,12 @@ pub struct InjectionConfig {
     /// "clipboard" (Ctrl+V) or "type" (key events)
     pub method: String,
     pub clipboard_delay_ms: u64,
+    /// Which key combo the Wayland uinput paste emits:
+    ///   "ctrl-v"        — GUI text fields (default, works in most editors/browsers)
+    ///   "ctrl-shift-v"  — terminals (GNOME Terminal, kitty, VS Code terminal, Claude Code CLI)
+    ///   "both"          — send Ctrl+V then Ctrl+Shift+V back-to-back; maximum coverage
+    ///                     but may open paste-special dialogs in some apps
+    pub paste_shortcut: String,
 }
 
 impl Default for Config {
@@ -125,7 +131,11 @@ impl Default for TranscriptionConfig {
 impl Default for OverlayConfig {
     fn default() -> Self {
         Self {
-            position: "top-right".to_string(),
+            // Bottom-center: least-obtrusive default for a voice input
+            // overlay — user attention is typically mid-screen text
+            // fields, and top-right badges collide with notification
+            // toasts on GNOME/KDE.
+            position: "bottom-center".to_string(),
             opacity: 0.9,
         }
     }
@@ -136,6 +146,11 @@ impl Default for InjectionConfig {
         Self {
             method: "clipboard".to_string(),
             clipboard_delay_ms: 80,
+            // Default "both" so out-of-box usage works in both GUI apps
+            // and terminals without the user needing to know to flip a
+            // toggle. Power users in LibreOffice / VS Code can switch to
+            // "ctrl-v" to avoid paste-special side effects.
+            paste_shortcut: "both".to_string(),
         }
     }
 }
