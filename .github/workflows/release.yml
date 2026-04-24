@@ -106,20 +106,41 @@ jobs:
         shell: bash
         run: |
           cargo deb --no-build
-          cp target/debian/*.deb dist/
+          # cargo-deb emits xsay_<ver>-1_amd64.deb with underscores. Our
+          # release glob is `xsay-*` for consistency with the raw binary
+          # names, so rename on copy into dist/.
+          SRC=$(ls target/debian/xsay_*.deb | head -1)
+          VER=$(basename "$SRC" | sed -E 's/^xsay_([^_]+)_amd64\.deb$/\1/')
+          cp "$SRC" "dist/xsay-linux-x64-${VER}.deb"
 
       # ---- NSIS installer for Windows ----
       - name: Build NSIS installer (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          # NSIS (makensis) is pre-installed on windows-latest runners.
+          # NSIS (makensis) is pre-installed on windows-latest runners,
+          # but not always on PATH — point at it explicitly.
+          $nsis = 'C:\Program Files (x86)\NSIS\makensis.exe'
+          if (-not (Test-Path $nsis)) {
+            $nsis = (Get-Command makensis -ErrorAction SilentlyContinue).Source
+          }
+          if (-not $nsis) {
+            throw "makensis.exe not found on the runner; install NSIS"
+          }
           $version = "${{ github.ref_name }}" -replace '^v',''
           if ([string]::IsNullOrEmpty($version)) { $version = "0.0.0-dev" }
           Copy-Item "target/release/xsay.exe" "windows/xsay.exe"
-          & makensis /DAPP_VERSION="$version" windows/installer.nsi
-          Move-Item "windows/xsay-*-setup.exe" "dist/"
-        continue-on-error: true
+          # /D for defines needs to be passed before the script path;
+          # NSIS 3.x syntax is /DNAME=VALUE with no spaces.
+          & "$nsis" "/DAPP_VERSION=$version" windows/installer.nsi
+          if ($LASTEXITCODE -ne 0) {
+            throw "NSIS build failed with exit $LASTEXITCODE"
+          }
+          # Rename to fit dist/xsay-* so the release-asset glob catches
+          # the setup binary alongside the raw xsay.exe.
+          Get-ChildItem "windows/xsay-*-setup.exe" | ForEach-Object {
+            Move-Item $_.FullName "dist/xsay-windows-x64-setup-$version.exe"
+          }
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
