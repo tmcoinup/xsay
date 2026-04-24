@@ -33,7 +33,11 @@ jobs:
             make_deb: true
             binary_name: xsay
           # Linux — Vulkan (cross-vendor GPU, NVIDIA/AMD/Intel).
-          - os: ubuntu-22.04
+          # Uses 24.04 because `glslc` isn't a separate apt package in
+          # Ubuntu 22.04 (only available via libshaderc-dev on older
+          # releases), and whisper.cpp's Vulkan backend cmake probes
+          # for the binary by name.
+          - os: ubuntu-24.04
             label: linux-x64-vulkan
             features: "vulkan"
             apt: "libx11-dev libxtst-dev libasound2-dev libgtk-3-dev libayatana-appindicator3-dev libxdo-dev libvulkan-dev glslang-tools glslc cmake pkg-config"
