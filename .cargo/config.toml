@@ -1,0 +1,8 @@
+# When sensevoice feature is on, xsay links to libsherpa-onnx-c-api.so
+# which sherpa-rs places next to the binary in target/. For production
+# distribution + local runs to find it without LD_LIBRARY_PATH gymnastics,
+# bake $ORIGIN (= directory of the executable) into the binary's RPATH.
+# Applies to all Linux builds regardless of features — adds no cost when
+# the lib isn't actually linked (unused RPATH entries are harmless).
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "link-arg=-Wl,-rpath,$ORIGIN"]

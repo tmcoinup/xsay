@@ -68,9 +68,17 @@ winit = "0.30"
 #   hipblas  AMD + ROCm toolkit                     (cargo build --release --features hipblas)
 #   coreml   macOS CoreML neural engine             (cargo build --release --features coreml)
 #
-# Only pick one — they are mutually exclusive at the whisper-rs-sys build
-# level (the C++ side links one GGML backend). `build.sh` wraps the common
-# permutations into a single-command release workflow.
+# Whisper-backend flags above are mutually exclusive (whisper-rs-sys
+# links one GGML backend). `build.sh` wraps common permutations.
+#
+# SenseVoice / ONNX alternative backend — best Chinese accuracy, 5-7x
+# faster than Whisper-large, via the sherpa-rs wrapper over sherpa-onnx:
+#
+#   sensevoice        CPU ONNX (pre-built libs fetched on `cargo build`)
+#   sensevoice-cuda   same but with CUDA execution provider
+#
+# Feature-gated so default build stays whisper-only and avoids pulling
+# the ~50MB sherpa-onnx shared library when unused.
 [features]
 default = []
 cuda = ["whisper-rs/cuda"]
@@ -78,3 +86,11 @@ vulkan = ["whisper-rs/vulkan"]
 metal = ["whisper-rs/metal"]
 hipblas = ["whisper-rs/hipblas"]
 coreml = ["whisper-rs/coreml"]
+sensevoice = ["dep:sherpa-rs"]
+sensevoice-cuda = ["dep:sherpa-rs", "sherpa-rs/cuda"]
+
+[dependencies.sherpa-rs]
+version = "0.6"
+optional = true
+default-features = false
+features = ["download-binaries"]

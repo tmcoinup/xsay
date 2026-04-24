@@ -7,6 +7,10 @@ pub struct TranscribeReq {
     pub language: String,
     pub n_threads: i32,
     pub translate: bool,
+    /// "whisper" | "sensevoice" — chosen per-request so live backend
+    /// switches from the settings UI take effect on the next utterance
+    /// without needing to restart the daemon.
+    pub backend: String,
 }
 
 pub struct TranscriptSeg {
@@ -76,6 +80,21 @@ fn process_request(
 ) {
     if req.samples.is_empty() {
         return;
+    }
+
+    // Backend dispatch — pluggable so Whisper can coexist with SenseVoice
+    // and future ASR backends. Non-whisper backends are feature-gated;
+    // when the corresponding feature is off we fall through to Whisper
+    // rather than crashing, so a config with backend="sensevoice" on a
+    // binary built without that feature still produces output.
+    if req.backend == "sensevoice" {
+        if try_sensevoice(&req, transcript_tx) {
+            return;
+        }
+        log::warn!(
+            "SenseVoice backend requested but unavailable (needs xsay built \
+             with --features sensevoice + model downloaded); falling back to Whisper"
+        );
     }
 
     // Escalate from debug → info so this always appears in release logs —
@@ -178,6 +197,79 @@ fn process_request(
     log::debug!("Transcription result: {:?}", text);
 
     let _ = transcript_tx.send(TranscriptSeg { text });
+}
+
+/// SenseVoice dispatch. Returns `true` if we attempted the backend and
+/// produced output (success or empty silence filter applied) — caller
+/// should then skip the Whisper codepath. Returns `false` if the backend
+/// isn't compiled in or the model isn't installed, letting the caller
+/// fall back to Whisper.
+#[cfg(any(feature = "sensevoice", feature = "sensevoice-cuda"))]
+fn try_sensevoice(req: &TranscribeReq, tx: &Sender<TranscriptSeg>) -> bool {
+    if !crate::sensevoice::is_installed() {
+        return false;
+    }
+    let provider = if cfg!(feature = "sensevoice-cuda") {
+        "cuda".to_string()
+    } else {
+        "cpu".to_string()
+    };
+    let opts = crate::sensevoice::SenseVoiceOptions {
+        language: req.language.clone(),
+        use_itn: true,
+        provider,
+        num_threads: req.n_threads.max(1),
+    };
+    let secs = req.samples.len() as f32 / 16000.0;
+    log::info!(
+        "SenseVoice start: {} samples ({:.2}s), lang={}, threads={}",
+        req.samples.len(),
+        secs,
+        req.language,
+        req.n_threads,
+    );
+    let start = std::time::Instant::now();
+    let Some(raw) = crate::sensevoice::transcribe(&req.samples, &opts) else {
+        return false;
+    };
+    log::info!("SenseVoice done in {:?}", start.elapsed());
+    // SenseVoice output sometimes prefixes language/emotion markers like
+    // "<|zh|><|NEUTRAL|><|Speech|><|withitn|>". Strip anything between
+    // angle brackets before passing through the shared hallucination
+    // filter.
+    let cleaned = strip_sensevoice_markers(&raw);
+    let trimmed = cleaned.trim();
+    if trimmed.is_empty() || is_silence_marker(trimmed) {
+        let _ = tx.send(TranscriptSeg { text: String::new() });
+    } else {
+        let _ = tx.send(TranscriptSeg {
+            text: trimmed.to_string(),
+        });
+    }
+    true
+}
+
+#[cfg(not(any(feature = "sensevoice", feature = "sensevoice-cuda")))]
+fn try_sensevoice(_req: &TranscribeReq, _tx: &Sender<TranscriptSeg>) -> bool {
+    false
+}
+
+#[cfg(any(feature = "sensevoice", feature = "sensevoice-cuda"))]
+fn strip_sensevoice_markers(s: &str) -> String {
+    // Cheap left-to-right scan: drop everything between '<' and '>'
+    // (inclusive). We don't need a real XML parser — SenseVoice only
+    // emits single-token markers, never nested.
+    let mut out = String::with_capacity(s.len());
+    let mut in_tag = false;
+    for c in s.chars() {
+        match c {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if !in_tag => out.push(c),
+            _ => {}
+        }
+    }
+    out
 }
 
 /// Whisper emits sentinels like `[BLANK_AUDIO]`, `(silence)`, `[noise]`,

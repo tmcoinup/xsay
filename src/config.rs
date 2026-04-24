@@ -51,6 +51,13 @@ pub struct TranscriptionConfig {
     pub language: String,
     pub translate: bool,
     pub n_threads: i32,
+    /// ASR backend:
+    ///   "whisper"    — whisper.cpp via whisper-rs (default, CPU/GPU via features)
+    ///   "sensevoice" — SenseVoice-Small ONNX via sherpa-rs; requires
+    ///                  xsay built with `--features sensevoice`, model
+    ///                  downloaded to ~/.cache/xsay/models/sensevoice/.
+    ///                  Better Chinese accuracy, ~5-7x faster than Whisper-L.
+    pub backend: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -124,6 +131,7 @@ impl Default for TranscriptionConfig {
             language: "auto".to_string(),
             translate: false,
             n_threads: 4,
+            backend: "whisper".to_string(),
         }
     }
 }

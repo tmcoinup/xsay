@@ -13,6 +13,8 @@ mod inject;
 mod ipc;
 mod model;
 mod overlay;
+#[cfg(any(feature = "sensevoice", feature = "sensevoice-cuda"))]
+mod sensevoice;
 mod settings_ui;
 mod state;
 mod theme;
@@ -346,6 +348,7 @@ fn handle_audio_chunk(
                 language: snap.language,
                 n_threads: snap.n_threads,
                 translate: snap.translate,
+                backend: snap.backend,
             });
 
             // If triggered by pause, stay in Recording state (key still held)
