@@ -82,9 +82,22 @@ fn run_device_loop(
     recording: Arc<AtomicBool>,
     held_keys: Arc<Mutex<HashSet<u16>>>,
 ) {
+    // Exponential backoff for transient fetch_events errors. Common
+    // triggers: laptop suspend/resume (which releases the grab), USB
+    // keyboard re-enumeration, or the kernel buffer momentarily
+    // overflowing under heavy I/O. Breaking out of the loop the way we
+    // used to meant a single hiccup silently killed xsay's hotkey
+    // handling for the rest of the session ("按着按着快捷键就出不来
+    // 了"). A short sleep + retry keeps us alive across those events;
+    // if the device is genuinely gone we bail after enough failures.
+    const MAX_CONSECUTIVE_ERRORS: u32 = 30;
+    const BASE_BACKOFF_MS: u64 = 50;
+    let mut consecutive_errors: u32 = 0;
+
     loop {
         match device.fetch_events() {
             Ok(events) => {
+                consecutive_errors = 0;
                 for ev in events {
                     if ev.event_type() == EventType::KEY {
                         handle_key(
@@ -100,8 +113,23 @@ fn run_device_loop(
                 }
             }
             Err(e) => {
-                log::error!("evdev device error, stopping thread: {}", e);
-                break;
+                consecutive_errors += 1;
+                let backoff =
+                    BASE_BACKOFF_MS * (1u64 << consecutive_errors.min(8));
+                log::warn!(
+                    "evdev fetch_events error #{}: {} — sleeping {}ms and retrying",
+                    consecutive_errors,
+                    e,
+                    backoff
+                );
+                if consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
+                    log::error!(
+                        "evdev device gave {} consecutive errors; abandoning it",
+                        consecutive_errors
+                    );
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(backoff));
             }
         }
     }

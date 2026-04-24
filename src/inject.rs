@@ -76,32 +76,13 @@ fn inject_via_clipboard(text: &str, delay_ms: u64, paste_shortcut: &str) {
     // Brief delay so clipboard contents settle
     std::thread::sleep(Duration::from_millis(delay_ms));
 
-    // Still try Ctrl+V — works for XWayland apps (terminals, older GTK/Qt,
-    // VS Code stable, etc.). Errors are now logged instead of swallowed so
-    // Wayland-only failures surface in the log.
-    match Enigo::new(&Settings::default()) {
-        Ok(mut enigo) => {
-            if let Err(e) = enigo.key(Key::Control, Direction::Press) {
-                log::warn!("enigo: Ctrl press failed ({}); likely a native Wayland window", e);
-            }
-            std::thread::sleep(Duration::from_millis(10));
-            if let Err(e) = enigo.key(Key::Unicode('v'), Direction::Click) {
-                log::warn!("enigo: V click failed ({}); likely a native Wayland window", e);
-            }
-            std::thread::sleep(Duration::from_millis(10));
-            let _ = enigo.key(Key::Control, Direction::Release);
-        }
-        Err(e) => {
-            log::warn!("Failed to create enigo (paste will rely on manual Ctrl+V): {}", e);
-        }
-    }
-
     if wayland {
-        // Send paste keys directly via /dev/uinput. We keep a single
-        // virtual keyboard alive for the lifetime of the process —
-        // recreating one per paste (what `ydotool` does without its
-        // daemon) has a 50-150ms setup window during which emitted events
-        // are silently dropped. Alive-device has zero-latency emits.
+        // Wayland-only path: skip enigo (X11 XTEST) entirely and go
+        // straight through /dev/uinput. Sending both would double-paste
+        // in XWayland apps (terminals) because BOTH the X11 synthetic
+        // keypress AND the uinput kernel-level keypress get delivered
+        // to the focused app — that's where "启动识别会重复" was coming
+        // from. uinput reaches every app regardless of protocol.
         let pasted = uinput_paste::send_paste(paste_shortcut);
         if !pasted {
             let preview = preview_for_notification(text);
@@ -113,8 +94,32 @@ fn inject_via_clipboard(text: &str, delay_ms: u64, paste_shortcut: &str) {
         // Leave the clipboard set to the transcription — do not restore,
         // so manual Ctrl+V still works even if uinput succeeded.
     } else {
-        // Small delay then restore clipboard so the user's prior copy
-        // (URL, etc.) isn't stomped.
+        // X11 path: enigo's XTEST synthesis is the natural choice (no
+        // uinput permission dependency, instantaneous). Errors are
+        // logged rather than swallowed so unusual X11 setups surface.
+        match Enigo::new(&Settings::default()) {
+            Ok(mut enigo) => {
+                if let Err(e) = enigo.key(Key::Control, Direction::Press) {
+                    log::warn!("enigo: Ctrl press failed ({})", e);
+                }
+                std::thread::sleep(Duration::from_millis(10));
+                if let Err(e) = enigo.key(Key::Unicode('v'), Direction::Click) {
+                    log::warn!("enigo: V click failed ({})", e);
+                }
+                std::thread::sleep(Duration::from_millis(10));
+                let _ = enigo.key(Key::Control, Direction::Release);
+            }
+            Err(e) => {
+                log::warn!(
+                    "Failed to create enigo (paste will rely on manual Ctrl+V): {}",
+                    e
+                );
+            }
+        }
+
+        // X11-only clipboard restore. On Wayland we intentionally leave
+        // the transcription on the clipboard so manual Ctrl+V still
+        // works if auto-paste failed.
         std::thread::sleep(Duration::from_millis(100));
         if let Some(prev) = prev_text {
             let _ = clipboard.set_text(prev);

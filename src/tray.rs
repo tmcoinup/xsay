@@ -100,38 +100,18 @@ pub fn poll_events() -> Vec<TrayAction> {
     actions
 }
 
+/// Tray icon is our brand logo rendered to 32×32 at build time and
+/// included as raw RGBA. Previously we hand-drew a red circle + white
+/// mic inline, which:
+///   1. didn't match the application brand, and
+///   2. showed a persistent red dot that users mistook for a recording
+///      indicator (stacking with the overlay's actual recording badge
+///      gave the impression of two red dots on screen).
+/// The brand PNG itself has a transparent background so GNOME/KDE
+/// compositors blend it cleanly with any panel color.
 fn make_icon() -> Icon {
     const SIZE: u32 = 32;
-    let mut rgba = vec![0u8; (SIZE * SIZE * 4) as usize];
-
-    // Draw a simple microphone icon: red circle + white mic body + stand
-    for y in 0..SIZE {
-        for x in 0..SIZE {
-            let idx = ((y * SIZE + x) * 4) as usize;
-            let dx = x as i32 - 16;
-            let dy = y as i32 - 14;
-            let r2 = dx * dx + dy * dy;
-
-            let in_circle = r2 <= 121; // radius ~11
-            let in_mic = dx.abs() <= 3 && dy >= -8 && dy <= 3;
-            let in_stand = dx == 0 && dy >= 3 && dy <= 9;
-            let in_base = dy == 10 && dx.abs() <= 5;
-
-            if in_mic || in_stand || in_base {
-                // White foreground
-                rgba[idx] = 255;
-                rgba[idx + 1] = 255;
-                rgba[idx + 2] = 255;
-                rgba[idx + 3] = 255;
-            } else if in_circle {
-                // Red background
-                rgba[idx] = 200;
-                rgba[idx + 1] = 50;
-                rgba[idx + 2] = 50;
-                rgba[idx + 3] = 230;
-            }
-        }
-    }
-
-    Icon::from_rgba(rgba, SIZE, SIZE).expect("failed to build tray icon")
+    const RGBA: &[u8] = include_bytes!("../assets/tray-32.rgba");
+    debug_assert_eq!(RGBA.len(), (SIZE * SIZE * 4) as usize);
+    Icon::from_rgba(RGBA.to_vec(), SIZE, SIZE).expect("failed to build tray icon")
 }

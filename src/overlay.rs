@@ -144,27 +144,16 @@ impl eframe::App for XsayOverlay {
 
         ctx.request_repaint_after(Duration::from_millis(33));
 
-        // Keep main viewport always alive (don't Visible(false)) so egui's
-        // show_viewport_immediate can spawn the nested settings viewport.
-        // But ALSO explicitly send Visible(true) + Focus + repaint on
-        // every Idle → active transition — `with_visible(false)` from
-        // build_native_options leaves the window hidden until something
-        // tells the compositor "show this now", and relying solely on
-        // "we just painted content" isn't enough: GNOME/mutter
-        // occasionally keeps the window map-request pending, producing
-        // the "F2 按了但图标不出来" symptom.
+        // Window is always visible (transparent + mouse-passthrough when
+        // Idle). On Idle → active transition, re-assert AlwaysOnTop and
+        // kick an immediate repaint so the first frame of content lands
+        // ASAP, not waiting for the scheduled 33ms tick.
         let is_idle = matches!(state, AppState::Idle);
         let became_active = self.was_idle && !is_idle;
         if became_active {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
             ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(
                 egui::WindowLevel::AlwaysOnTop,
             ));
-            // Wake the event loop immediately so the first recording
-            // frame goes up within a few ms rather than waiting for the
-            // scheduled 33ms tick — short taps were being missed
-            // entirely because the visible transition landed between
-            // frames.
             ctx.request_repaint();
         }
         self.was_idle = is_idle;
@@ -407,7 +396,13 @@ pub fn build_native_options(_config: &crate::config::OverlayConfig) -> eframe::N
             .with_always_on_top()
             .with_mouse_passthrough(true) // pure feedback widget; no clicks
             .with_resizable(false)
-            .with_visible(false)
+            // Start VISIBLE (transparent + mouse-passthrough = invisible
+            // to the user but tracked by the compositor). Previously we
+            // started with_visible(false) and flipped Visible(true) only
+            // on Idle→active transitions, which raced short hotkey taps:
+            // if the state machine returned to Idle before the Visible
+            // command reached the compositor, the overlay never showed.
+            // An always-live transparent window eliminates that race.
             .with_inner_size([120.0, 120.0])
             .with_position(egui::pos2(1200.0, 20.0)),
         ..Default::default()
