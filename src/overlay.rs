@@ -144,26 +144,28 @@ impl eframe::App for XsayOverlay {
 
         ctx.request_repaint_after(Duration::from_millis(33));
 
-        // Keep main viewport always alive. Previously we sent
-        // Visible(false) in Idle to hide the overlay, but that crashed
-        // egui with "user callback was never called" when the tray
-        // opened the nested settings viewport while we were hidden —
-        // show_viewport_immediate requires a live parent. Instead we
-        // leave the viewport present but paint nothing in Idle state,
-        // which combined with transparent + mouse_passthrough = an
-        // invisible no-op window that doesn't disturb the user.
+        // Keep main viewport always alive (don't Visible(false)) so egui's
+        // show_viewport_immediate can spawn the nested settings viewport.
+        // But ALSO explicitly send Visible(true) + Focus + repaint on
+        // every Idle → active transition — `with_visible(false)` from
+        // build_native_options leaves the window hidden until something
+        // tells the compositor "show this now", and relying solely on
+        // "we just painted content" isn't enough: GNOME/mutter
+        // occasionally keeps the window map-request pending, producing
+        // the "F2 按了但图标不出来" symptom.
         let is_idle = matches!(state, AppState::Idle);
-
-        // Detect Idle → active transition. On becoming active, explicitly
-        // re-assert AlwaysOnTop — the `with_always_on_top()` builder hint
-        // is honored at creation, but some compositors drop the ABOVE hint
-        // over time. Without this the feedback badge can end up behind
-        // the user's active window or a notification toast.
         let became_active = self.was_idle && !is_idle;
         if became_active {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
             ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(
                 egui::WindowLevel::AlwaysOnTop,
             ));
+            // Wake the event loop immediately so the first recording
+            // frame goes up within a few ms rather than waiting for the
+            // scheduled 33ms tick — short taps were being missed
+            // entirely because the visible transition landed between
+            // frames.
+            ctx.request_repaint();
         }
         self.was_idle = is_idle;
 

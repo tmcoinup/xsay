@@ -27,6 +27,21 @@ pub struct ActiveDownload {
     pub cmd_tx: Sender<DownloadCmd>,
 }
 
+/// Post-download work for a sherpa ONNX install: extract the tar.bz2
+/// into a subdirectory, copy the model files into place, then delete
+/// the archive. Populated when the download starts and consumed by the
+/// completion handler.
+#[derive(Debug, Clone)]
+pub struct PendingSherpaExtract {
+    /// Download slug that matches ActiveDownload.filename (e.g. "sensevoice").
+    pub slug: String,
+    pub display_name: String,
+    /// Absolute path to the .tar.bz2 the download wrote.
+    pub archive_path: PathBuf,
+    /// Absolute path to the subdirectory the model files should end up in.
+    pub extract_to: PathBuf,
+}
+
 #[derive(Copy, Clone, PartialEq, Eq)]
 pub enum Tab {
     Model,
@@ -91,6 +106,12 @@ pub struct SettingsState {
     /// by the worker thread on success or error.
     pub sherpa_installing: Option<String>,
     pub sherpa_install_rx: Option<crossbeam_channel::Receiver<Result<String, String>>>,
+    /// When a sherpa model download (via `active_download`) completes, the
+    /// raw tar.bz2 needs to be extracted into a subdirectory. This field
+    /// pairs the download slug with the post-download extract plan so the
+    /// completion handler knows what to do next. Cleared after extract
+    /// finishes (or fails).
+    pub pending_sherpa_extract: Option<PendingSherpaExtract>,
 
     /// (message, color, set-at). Auto-clears 5s after `set_at` so bottom-of-
     /// window toasts don't linger indefinitely. Use `set_status()` to record
@@ -158,6 +179,7 @@ impl SettingsState {
             current_model_dirty: false,
             sherpa_installing: None,
             sherpa_install_rx: None,
+            pending_sherpa_extract: None,
         }
     }
 }

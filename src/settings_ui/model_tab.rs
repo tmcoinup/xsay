@@ -471,6 +471,24 @@ fn handle_download_completion(
     active_dl_filename: &Option<String>,
     state: &mut SettingsState,
 ) {
+    // Sherpa install path: when the tar.bz2 download finishes, transition
+    // into the extract phase rather than running the Whisper-file
+    // completion logic (which assumes the downloaded file IS the model).
+    if let Some(DlState::Completed) = dl_state_snap {
+        if let Some(fname) = active_dl_filename {
+            if state
+                .pending_sherpa_extract
+                .as_ref()
+                .map(|p| p.slug.as_str() == fname.as_str())
+                .unwrap_or(false)
+            {
+                let plan = state.pending_sherpa_extract.take().unwrap();
+                state.active_download = None;
+                start_sherpa_extract(plan, state);
+                return;
+            }
+        }
+    }
     if let Some(DlState::Completed) = dl_state_snap {
         if let Some(fname) = active_dl_filename {
             let cur = Config::load()
@@ -560,52 +578,93 @@ fn handle_sherpa_install_completion(state: &mut SettingsState) {
     }
 }
 
+/// Kick off a sherpa ONNX install. Reuses xsay's streaming downloader
+/// (same one as Whisper .bin files) so the user gets the proper
+/// progress bar / pause-resume UI while the .tar.bz2 streams in.
+/// On download completion `handle_download_completion` spots the
+/// `pending_sherpa_extract` entry and fires the untar phase in the
+/// background via `start_sherpa_extract`.
 fn start_sherpa_install(model: &ModelInfo, state: &mut SettingsState) {
-    let (tx, rx) = crossbeam_channel::bounded(1);
-    state.sherpa_install_rx = Some(rx);
-    state.sherpa_installing = Some(model.filename.to_string());
-    state.set_status(
-        format!("{} 正在下载并解压（几分钟）", model.name),
-        crate::theme::ACCENT,
+    let archive_path = state.cache_dir.join(format!("{}.tar.bz2", model.filename));
+    let extract_to = state.cache_dir.join(model.filename);
+    let _ = std::fs::create_dir_all(&state.cache_dir);
+
+    // Reuse an existing progress struct when resuming the same archive —
+    // same pattern start_model_download uses for Whisper .bin resumes.
+    let progress = if state
+        .active_download
+        .as_ref()
+        .map(|d| d.filename == model.filename)
+        .unwrap_or(false)
+    {
+        state
+            .active_download
+            .as_ref()
+            .map(|d| Arc::clone(&d.progress))
+            .unwrap()
+    } else {
+        DownloadProgress::new()
+    };
+
+    let cmd_tx = download::start_download(
+        model.archive_url.to_string(),
+        archive_path.clone(),
+        Arc::clone(&progress),
     );
 
-    let url = model.archive_url.to_string();
-    let dest_dir = state.cache_dir.join(model.filename);
-    let name = model.name.to_string();
-    let filename_slug = model.filename.to_string();
+    state.active_download = Some(ActiveDownload {
+        filename: model.filename.to_string(),
+        progress,
+        cmd_tx,
+    });
+    state.pending_sherpa_extract = Some(super::PendingSherpaExtract {
+        slug: model.filename.to_string(),
+        display_name: model.name.to_string(),
+        archive_path,
+        extract_to,
+    });
+    state.sherpa_installing = Some(model.filename.to_string());
+    state.set_status(
+        format!("{} 正在下载…", model.name),
+        crate::theme::ACCENT,
+    );
+}
 
+/// Called when the sherpa tar.bz2 download finishes. Runs the untar
+/// + file-placement phase off the UI thread and posts the result via
+/// the same `sherpa_install_rx` channel handle_sherpa_install_completion
+/// already polls.
+fn start_sherpa_extract(plan: super::PendingSherpaExtract, state: &mut SettingsState) {
+    let (tx, rx) = crossbeam_channel::bounded(1);
+    state.sherpa_install_rx = Some(rx);
+    state.set_status(
+        format!("{} 下载完成，解压中…", plan.display_name),
+        crate::theme::ACCENT,
+    );
     std::thread::spawn(move || {
-        let result = run_sherpa_install(&url, &dest_dir, &name);
-        let _ = tx.send(result.map(|_| filename_slug));
+        let result = run_sherpa_extract(&plan.archive_path, &plan.extract_to);
+        let _ = tx.send(result.map(|_| plan.slug));
     });
 }
 
-fn run_sherpa_install(
-    url: &str,
+fn run_sherpa_extract(
+    archive: &std::path::Path,
     dest_dir: &std::path::Path,
-    name: &str,
 ) -> Result<(), String> {
-    let tmp = std::env::temp_dir().join(format!("xsay-{}.tar.bz2", name));
-    let extract_tmp = std::env::temp_dir().join(format!("xsay-{}-extract", name));
+    let extract_tmp =
+        std::env::temp_dir().join(format!("xsay-extract-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&extract_tmp);
     std::fs::create_dir_all(&extract_tmp).map_err(|e| format!("mkdir: {}", e))?;
     std::fs::create_dir_all(dest_dir).map_err(|e| format!("mkdir: {}", e))?;
 
-    log::info!("sherpa install: curl {} → {}", url, tmp.display());
-    let status = std::process::Command::new("curl")
-        .args(["-L", "-sS", "--fail", "-o"])
-        .arg(&tmp)
-        .arg(url)
-        .status()
-        .map_err(|e| format!("curl spawn: {}", e))?;
-    if !status.success() {
-        return Err(format!("curl exited {}", status));
-    }
-
-    log::info!("sherpa install: tar -xjf → {}", extract_tmp.display());
+    log::info!(
+        "sherpa extract: tar -xjf {} → {}",
+        archive.display(),
+        extract_tmp.display()
+    );
     let status = std::process::Command::new("tar")
         .arg("-xjf")
-        .arg(&tmp)
+        .arg(archive)
         .arg("-C")
         .arg(&extract_tmp)
         .status()
@@ -614,8 +673,8 @@ fn run_sherpa_install(
         return Err(format!("tar exited {}", status));
     }
 
-    // The archive unpacks into a versioned subdir. Find it and copy the
-    // required files (model.int8.onnx, tokens.txt) into our flat cache dir.
+    // Archive unpacks into a versioned subdir — find it and copy the
+    // two files we need into our flat cache path.
     let inner_dir = std::fs::read_dir(&extract_tmp)
         .map_err(|e| format!("readdir: {}", e))?
         .filter_map(|e| e.ok())
@@ -632,10 +691,10 @@ fn run_sherpa_install(
         std::fs::copy(&src, &dst).map_err(|e| format!("copy {}: {}", fname, e))?;
     }
 
-    // Best-effort cleanup. Errors here don't fail the install.
-    let _ = std::fs::remove_file(&tmp);
+    // Cleanup (best-effort). Errors here don't fail the install.
+    let _ = std::fs::remove_file(archive);
     let _ = std::fs::remove_dir_all(&extract_tmp);
-    log::info!("sherpa install: {} ready at {}", name, dest_dir.display());
+    log::info!("sherpa extract: done → {}", dest_dir.display());
     Ok(())
 }
 
