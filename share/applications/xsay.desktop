@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=xsay
+GenericName=Voice Input
+Comment=Offline voice-to-text with a configurable hotkey
+Comment[zh_CN]=离线语音输入，按快捷键录音，自动识别并粘贴
+Exec=xsay
+Icon=xsay
+Terminal=false
+Categories=Utility;Office;AudioVideo;
+Keywords=voice;speech;dictation;whisper;transcribe;语音;听写;
+StartupNotify=false
+X-GNOME-UsesNotifications=true

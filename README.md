@@ -1,4 +1,8 @@
-# xsay
+<p align="center">
+  <img src="assets/xsay-logo.png" alt="xsay" width="128" height="128">
+</p>
+
+<h1 align="center">xsay</h1>
 
 <p align="center">
   <b>离线 AI 语音输入工具</b> · 按快捷键录音，松开自动识别，直接粘贴到光标处<br>

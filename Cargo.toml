@@ -10,6 +10,11 @@ readme = "README.md"
 name = "xsay"
 path = "src/main.rs"
 
+[build-dependencies]
+# Windows-only at runtime (see build.rs); declared unconditionally so
+# `cargo check` on any host can still resolve the graph.
+winres = "0.1"
+
 [package.metadata.deb]
 maintainer = "mason"
 copyright = "2026, mason"
@@ -24,6 +29,13 @@ depends = "libc6, libx11-6, libxtst6, libasound2, libgtk-3-0, libayatana-appindi
 assets = [
     ["target/release/xsay", "usr/bin/", "755"],
     ["README.md", "usr/share/doc/xsay/README", "644"],
+    # Desktop launcher (Ubuntu Software / Activities picks it up).
+    ["share/applications/xsay.desktop", "usr/share/applications/xsay.desktop", "644"],
+    # App icons in standard hicolor theme paths so GNOME / KDE / etc.
+    # resolve them automatically.
+    ["share/icons/hicolor/48x48/apps/xsay.png",     "usr/share/icons/hicolor/48x48/apps/xsay.png",     "644"],
+    ["share/icons/hicolor/256x256/apps/xsay.png",   "usr/share/icons/hicolor/256x256/apps/xsay.png",   "644"],
+    ["share/icons/hicolor/scalable/apps/xsay.svg",  "usr/share/icons/hicolor/scalable/apps/xsay.svg",  "644"],
 ]
 
 [dependencies]
