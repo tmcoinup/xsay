@@ -40,6 +40,7 @@ pub fn render(ui: &mut egui::Ui, state: &mut SettingsState) {
         .unwrap_or(0);
 
     handle_download_completion(&dl_state_snap, &active_dl_filename, state);
+    handle_sherpa_install_completion(state);
 
     egui::ScrollArea::vertical().show(ui, |ui| {
         ui.spacing_mut().item_spacing.y = 6.0;
@@ -132,9 +133,25 @@ fn render_model_row(
     let is_current = model.filename == current_filename;
     let is_this_dl = active_dl_filename == Some(model.filename);
 
-    let is_downloaded = local_path.exists();
+    // Sherpa models unpack into a subdirectory with model.int8.onnx +
+    // tokens.txt; Whisper models are a single .bin file. Check for the
+    // right artifact per backend so the UI shows accurate download state.
+    let is_downloaded = if model.backend == "whisper" {
+        local_path.is_file()
+    } else {
+        local_path.join("model.int8.onnx").is_file()
+            && local_path.join("tokens.txt").is_file()
+    };
     let has_partial = partial_path.exists() && !is_downloaded;
-    let local_size = local_path.metadata().map(|m| m.len()).unwrap_or(0);
+    let local_size = if model.backend == "whisper" {
+        local_path.metadata().map(|m| m.len()).unwrap_or(0)
+    } else {
+        local_path
+            .join("model.int8.onnx")
+            .metadata()
+            .map(|m| m.len())
+            .unwrap_or(0)
+    };
     let partial_size = partial_path.metadata().map(|m| m.len()).unwrap_or(0);
 
     let remote = state.remote_sizes.get(model.filename).copied().flatten();
@@ -371,31 +388,56 @@ fn render_action_row(
             }
         } else {
             if !is_downloaded {
-                let (icon, label) = if has_partial {
-                    (Icon::Play, "继续下载")
+                // Sherpa ONNX models ship as tar.bz2 archives (model + tokens
+                // in a subdirectory) instead of a single .bin file, so the
+                // per-file download infrastructure doesn't fit. Show an
+                // "安装" action that shells out to curl + tar via a
+                // background thread, and let the UI poll install state.
+                if model.backend != "whisper" {
+                    let installing = state
+                        .sherpa_installing
+                        .as_ref()
+                        .map(|s| s.as_str() == model.filename)
+                        .unwrap_or(false);
+                    let label = if installing { "安装中..." } else { "安装" };
+                    let color = if installing {
+                        crate::theme::TEXT_SECONDARY
+                    } else {
+                        crate::theme::ACCENT
+                    };
+                    if theme::icon_link_button(ui, Icon::Download, label, color)
+                        .clicked()
+                        && !installing
+                    {
+                        start_sherpa_install(model, state);
+                    }
                 } else {
-                    (Icon::Download, "下载")
-                };
-                let enabled = state.active_download.is_none();
-                let color = if enabled {
-                    crate::theme::ACCENT
-                } else {
-                    crate::theme::TEXT_DISABLED
-                };
-                let resp = theme::icon_link_button(ui, icon, label, color);
-                if enabled && resp.clicked() {
-                    start_model_download(model, state);
-                }
-                if has_partial
-                    && theme::icon_link_button(
-                        ui,
-                        Icon::X,
-                        "删除进度",
-                        crate::theme::DANGER_HOVER,
-                    )
-                    .clicked()
-                {
-                    let _ = std::fs::remove_file(partial_path);
+                    let (icon, label) = if has_partial {
+                        (Icon::Play, "继续下载")
+                    } else {
+                        (Icon::Download, "下载")
+                    };
+                    let enabled = state.active_download.is_none();
+                    let color = if enabled {
+                        crate::theme::ACCENT
+                    } else {
+                        crate::theme::TEXT_DISABLED
+                    };
+                    let resp = theme::icon_link_button(ui, icon, label, color);
+                    if enabled && resp.clicked() {
+                        start_model_download(model, state);
+                    }
+                    if has_partial
+                        && theme::icon_link_button(
+                            ui,
+                            Icon::X,
+                            "删除进度",
+                            crate::theme::DANGER_HOVER,
+                        )
+                        .clicked()
+                    {
+                        let _ = std::fs::remove_file(partial_path);
+                    }
                 }
             }
 
@@ -477,6 +519,126 @@ fn persist_config(cfg: &Config) {
     }
 }
 
+/// Download + extract a sherpa-onnx ASR archive (tar.bz2) into
+/// ~/.cache/xsay/models/<filename>/. Runs off the UI thread; result is
+/// posted back through a crossbeam channel the render loop polls.
+///
+/// Shells out to system `curl` and `tar` — both ubiquitous on Linux and
+/// already required for xsay to compile. Keeps the binary small (no
+/// Rust tar/bz2 decoder pulled into every build).
+/// Non-blocking check: has the background sherpa-install thread finished?
+/// Clears the `sherpa_installing` / `sherpa_install_rx` state and posts
+/// success/failure to the status toast.
+fn handle_sherpa_install_completion(state: &mut SettingsState) {
+    let Some(rx) = &state.sherpa_install_rx else {
+        return;
+    };
+    match rx.try_recv() {
+        Ok(Ok(filename)) => {
+            let nice = MODELS
+                .iter()
+                .find(|m| m.filename == filename.as_str())
+                .map(|m| m.name)
+                .unwrap_or(filename.as_str())
+                .to_string();
+            state.set_status(
+                format!("✓ {} 已安装（去点它的切换使用）", nice),
+                crate::theme::SUCCESS,
+            );
+            state.sherpa_installing = None;
+            state.sherpa_install_rx = None;
+        }
+        Ok(Err(e)) => {
+            state.set_status(
+                format!("安装失败：{}", e),
+                crate::theme::DANGER_HOVER,
+            );
+            state.sherpa_installing = None;
+            state.sherpa_install_rx = None;
+        }
+        Err(_) => {} // still running
+    }
+}
+
+fn start_sherpa_install(model: &ModelInfo, state: &mut SettingsState) {
+    let (tx, rx) = crossbeam_channel::bounded(1);
+    state.sherpa_install_rx = Some(rx);
+    state.sherpa_installing = Some(model.filename.to_string());
+    state.set_status(
+        format!("{} 正在下载并解压（几分钟）", model.name),
+        crate::theme::ACCENT,
+    );
+
+    let url = model.archive_url.to_string();
+    let dest_dir = state.cache_dir.join(model.filename);
+    let name = model.name.to_string();
+    let filename_slug = model.filename.to_string();
+
+    std::thread::spawn(move || {
+        let result = run_sherpa_install(&url, &dest_dir, &name);
+        let _ = tx.send(result.map(|_| filename_slug));
+    });
+}
+
+fn run_sherpa_install(
+    url: &str,
+    dest_dir: &std::path::Path,
+    name: &str,
+) -> Result<(), String> {
+    let tmp = std::env::temp_dir().join(format!("xsay-{}.tar.bz2", name));
+    let extract_tmp = std::env::temp_dir().join(format!("xsay-{}-extract", name));
+    let _ = std::fs::remove_dir_all(&extract_tmp);
+    std::fs::create_dir_all(&extract_tmp).map_err(|e| format!("mkdir: {}", e))?;
+    std::fs::create_dir_all(dest_dir).map_err(|e| format!("mkdir: {}", e))?;
+
+    log::info!("sherpa install: curl {} → {}", url, tmp.display());
+    let status = std::process::Command::new("curl")
+        .args(["-L", "-sS", "--fail", "-o"])
+        .arg(&tmp)
+        .arg(url)
+        .status()
+        .map_err(|e| format!("curl spawn: {}", e))?;
+    if !status.success() {
+        return Err(format!("curl exited {}", status));
+    }
+
+    log::info!("sherpa install: tar -xjf → {}", extract_tmp.display());
+    let status = std::process::Command::new("tar")
+        .arg("-xjf")
+        .arg(&tmp)
+        .arg("-C")
+        .arg(&extract_tmp)
+        .status()
+        .map_err(|e| format!("tar spawn: {}", e))?;
+    if !status.success() {
+        return Err(format!("tar exited {}", status));
+    }
+
+    // The archive unpacks into a versioned subdir. Find it and copy the
+    // required files (model.int8.onnx, tokens.txt) into our flat cache dir.
+    let inner_dir = std::fs::read_dir(&extract_tmp)
+        .map_err(|e| format!("readdir: {}", e))?
+        .filter_map(|e| e.ok())
+        .find(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+        .map(|e| e.path())
+        .ok_or_else(|| "archive had no inner directory".to_string())?;
+
+    for fname in ["model.int8.onnx", "tokens.txt"] {
+        let src = inner_dir.join(fname);
+        let dst = dest_dir.join(fname);
+        if !src.exists() {
+            return Err(format!("archive missing {}", fname));
+        }
+        std::fs::copy(&src, &dst).map_err(|e| format!("copy {}: {}", fname, e))?;
+    }
+
+    // Best-effort cleanup. Errors here don't fail the install.
+    let _ = std::fs::remove_file(&tmp);
+    let _ = std::fs::remove_dir_all(&extract_tmp);
+    log::info!("sherpa install: {} ready at {}", name, dest_dir.display());
+    Ok(())
+}
+
 fn start_model_download(model: &ModelInfo, state: &mut SettingsState) {
     let url = download::hf_url(&state.hf_repo, model.filename);
     let dest = state.cache_dir.join(model.filename);
@@ -509,13 +671,26 @@ fn start_model_download(model: &ModelInfo, state: &mut SettingsState) {
 
 fn switch_model(model: &ModelInfo, local_path: &PathBuf, state: &mut SettingsState) {
     if let Ok(mut cfg) = Config::load() {
+        // Whisper path: point hf_filename at the selected .bin so the
+        // transcribe thread picks it up on reload. Sherpa models don't
+        // use hf_filename (they live in a subdirectory with fixed names)
+        // but we still store it so the UI's "current model" resolver
+        // knows which row is active.
         cfg.model.hf_filename = model.filename.to_string();
+        // Switching across backends — flip the transcription backend so
+        // the next utterance goes through the right recognizer.
+        cfg.transcription.backend = model.backend.to_string();
         persist_config(&cfg);
+        *state.shared_transcription.lock() = cfg.transcription.clone();
     }
-    let _ = state.model_reload_tx.send(local_path.clone());
+    // Only send a reload signal for Whisper models — the sherpa path
+    // initializes on first use and doesn't watch the model_reload channel.
+    if model.backend == "whisper" {
+        let _ = state.model_reload_tx.send(local_path.clone());
+    }
     state.current_model_dirty = true;
     state.set_status(
-        format!("✓ 已切换到 {} 模型（后台加载中）", model.name),
+        format!("✓ 已切换到 {}（后端 = {}）", model.name, model.backend),
         crate::theme::SUCCESS,
     );
 }

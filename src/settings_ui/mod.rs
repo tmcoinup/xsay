@@ -85,6 +85,13 @@ pub struct SettingsState {
     pub current_model_cache: String,
     pub current_model_dirty: bool,
 
+    /// Set to the ModelInfo.filename of a sherpa model currently being
+    /// downloaded + extracted in a background thread. Drives the
+    /// "安装中..." button state and blocks concurrent installs. Cleared
+    /// by the worker thread on success or error.
+    pub sherpa_installing: Option<String>,
+    pub sherpa_install_rx: Option<crossbeam_channel::Receiver<Result<String, String>>>,
+
     /// (message, color, set-at). Auto-clears 5s after `set_at` so bottom-of-
     /// window toasts don't linger indefinitely. Use `set_status()` to record
     /// new messages so the timestamp is filled in correctly.
@@ -149,6 +156,8 @@ impl SettingsState {
             last_tab: None,
             current_model_cache: config.model.hf_filename.clone(),
             current_model_dirty: false,
+            sherpa_installing: None,
+            sherpa_install_rx: None,
         }
     }
 }
