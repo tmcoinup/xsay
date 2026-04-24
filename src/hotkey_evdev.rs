@@ -168,6 +168,20 @@ fn run_device_loop(
                                     log::warn!("evdev: ungrab failed: {}", e);
                                 }
                                 grabbed = false;
+                                // Belt-and-suspenders: re-send a
+                                // synthetic KEY_UP for the chord keys.
+                                // On a clean hotkey release the
+                                // compositor already got its update via
+                                // the initial grab-time send_release,
+                                // but if xsay flaked out mid-cycle and
+                                // a subsequent invocation takes over
+                                // grabbing, this guarantees we don't
+                                // leave any "key stuck down" state in
+                                // the compositor between cycles.
+                                let chord = chord_keycodes(&shared_config.lock());
+                                if !chord.is_empty() {
+                                    crate::inject::uinput_paste::send_release(&chord);
+                                }
                                 log::debug!("evdev: ungrabbed keyboard");
                             }
                         }
