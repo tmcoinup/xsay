@@ -123,22 +123,25 @@ fn compute_corner_position(monitor: egui::Vec2, window: egui::Vec2, corner: &str
 
 impl eframe::App for XsayOverlay {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        // egui 0.34 renamed `App::update` → `App::ui` and passes a root Ui
-        // instead of a Context. Most of our code still thinks in terms of
-        // viewport commands keyed on Context, so we take a clone and keep
-        // the original body largely unchanged.
         let ctx = ui.ctx().clone();
         let ctx = &ctx;
-        // Handle tray menu events
+
+        // Drive repaint at ~30fps so the state machine + overlay animation
+        // stay live. request_repaint() on the ctx makes eframe keep
+        // polling even while the window is hidden (close-to-tray case).
+        ctx.request_repaint_after(Duration::from_millis(33));
+
+        // -----------------------------------------------------------------
+        // Tray menu actions. "Show Settings" re-shows + focuses the
+        // main window (whether it was hidden, minimized, or occluded).
+        // "Quit" cleanly closes the main viewport, ending the process.
+        // -----------------------------------------------------------------
         for action in tray::poll_events() {
             match action {
                 TrayAction::ShowSettings => {
-                    // If the settings viewport is already open but
-                    // obscured, setting show_settings=true alone has no
-                    // effect. Raise a flag the settings viewport callback
-                    // reads next frame to send a Focus command.
-                    self.show_settings = true;
-                    self.settings_focus_requested = true;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
                 }
                 TrayAction::Quit => {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -146,142 +149,145 @@ impl eframe::App for XsayOverlay {
             }
         }
 
+        // -----------------------------------------------------------------
+        // Close-to-tray intercept. When the user clicks the window's red
+        // traffic light (or the compositor's own close button, if they
+        // override our decorations), eframe wants to exit. We CancelClose
+        // and send Visible(false) instead — xsay keeps running, the tray
+        // icon stays, and the user can reopen from there.
+        // -----------------------------------------------------------------
+        if ctx.input(|i| i.viewport().close_requested()) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+        }
+
+        // -----------------------------------------------------------------
+        // Main window content = settings panel. Renders directly into the
+        // root viewport's egui::Context. `settings_ui::render` returns
+        // true when the user clicks our custom red traffic light — treat
+        // that as "hide to tray" just like the compositor's close button.
+        // -----------------------------------------------------------------
+        if settings_ui::render(ctx, &mut self.settings) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+        }
+
+        // -----------------------------------------------------------------
+        // Recording feedback overlay — nested viewport that renders
+        // only when xsay is actively recording / transcribing / injecting.
+        // Always-on-top + transparent + mouse-passthrough + skip-taskbar
+        // so it's a pure visual indicator, not a window the user has to
+        // manage. Stays alive across state transitions (re-created if
+        // state drops back to Idle and later becomes active again).
+        // -----------------------------------------------------------------
         let state = self.shared_state.lock().clone();
-
-        ctx.request_repaint_after(Duration::from_millis(33));
-
-        // Window is always visible (transparent + mouse-passthrough when
-        // Idle). On Idle → active transition, re-assert AlwaysOnTop and
-        // kick an immediate repaint so the first frame of content lands
-        // ASAP, not waiting for the scheduled 33ms tick.
         let is_idle = matches!(state, AppState::Idle);
-        let became_active = self.was_idle && !is_idle;
-        if became_active {
-            ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(
-                egui::WindowLevel::AlwaysOnTop,
-            ));
-            ctx.request_repaint();
-        }
-        self.was_idle = is_idle;
-
-        let target_size = egui::vec2(120.0, 120.0);
-
-        match &state {
-            AppState::Idle => {
-                // Nothing to render — viewport is hidden.
-            }
-            AppState::Recording { .. } => {
-                ctx.send_viewport_cmd(egui::ViewportCommand::MousePassthrough(true));
-                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(target_size));
-                self.animation_phase += 0.08;
-                self.render_recording(ctx);
-            }
-            AppState::Transcribing => {
-                ctx.send_viewport_cmd(egui::ViewportCommand::MousePassthrough(true));
-                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(target_size));
-                self.dots_phase += 0.05;
-                self.render_status(ctx, "识别中", crate::theme::ACCENT);
-            }
-            AppState::Injecting => {
-                ctx.send_viewport_cmd(egui::ViewportCommand::MousePassthrough(true));
-                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(target_size));
-                self.dots_phase += 0.05;
-                self.render_status(ctx, "输入中", crate::theme::SUCCESS);
-            }
-        }
-
-        // Re-anchor the feedback widget to the configured corner, only while
-        // visible. Skipped during Idle to save cycles.
         if !is_idle {
+            let became_active = self.was_idle;
+            let overlay_size = egui::vec2(120.0, 120.0);
             let corner = self.shared_position.lock().clone();
-            if target_size != self.last_positioned_size || corner != self.last_positioned_corner {
-                if let Some(monitor) = ctx.input(|i| i.viewport().monitor_size) {
-                    if monitor.x > 0.0 && monitor.y > 0.0 {
-                        let pos = compute_corner_position(monitor, target_size, &corner);
-                        ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(pos));
-                        self.last_positioned_size = target_size;
-                        self.last_positioned_corner = corner;
-                    }
-                }
-            }
-        }
 
-        // Settings window (separate viewport). Centered on first open each
-        // session, re-raised to foreground when the user asks again via
-        // tray (handles the "window obscured behind another" case).
-        if self.show_settings {
-            let inner_size = egui::vec2(700.0, 660.0);
-            // Compute a monitor-center position to use on initial creation.
-            // egui only applies `with_position` once per viewport lifetime;
-            // subsequent re-shows need an explicit OuterPosition command,
-            // which we send below when the centering flag is reset.
-            let center_pos = ctx
+            // Precompute overlay position from monitor dimensions.
+            let overlay_pos = ctx
                 .input(|i| i.viewport().monitor_size)
                 .filter(|m| m.x > 0.0 && m.y > 0.0)
-                .map(|m| {
-                    egui::pos2(
-                        ((m.x - inner_size.x) * 0.5).max(0.0),
-                        ((m.y - inner_size.y) * 0.5).max(0.0),
-                    )
-                });
+                .map(|m| compute_corner_position(m, overlay_size, &corner));
 
             let mut builder = egui::ViewportBuilder::default()
-                .with_title("xsay 设置")
-                .with_inner_size([inner_size.x, inner_size.y])
-                .with_min_inner_size([640.0, 540.0])
-                .with_resizable(true)
-                .with_decorations(false);
-            if let Some(p) = center_pos {
+                .with_title("xsay recording")
+                .with_app_id("xsay-overlay")
+                .with_decorations(false)
+                .with_transparent(true)
+                .with_always_on_top()
+                .with_mouse_passthrough(true)
+                .with_resizable(false)
+                .with_taskbar(false)
+                .with_inner_size([overlay_size.x, overlay_size.y]);
+            if let Some(p) = overlay_pos {
                 builder = builder.with_position(p);
             }
 
-            let show_ref = &mut self.show_settings;
-            let settings_ref = &mut self.settings;
-            let focus_req = std::mem::take(&mut self.settings_focus_requested);
-            let needs_recenter = !self.settings_centered;
-            self.settings_centered = true;
+            // Split borrows so the closure can mutate animation state
+            // without also holding &self (render_mic_glyph is a free
+            // function that doesn't need Self).
+            let overlay_state = state.clone();
+            let animation_phase = &mut self.animation_phase;
+            let dots_phase = &mut self.dots_phase;
 
             ctx.show_viewport_immediate(
-                egui::ViewportId::from_hash_of("xsay_settings"),
+                egui::ViewportId::from_hash_of("xsay_overlay"),
                 builder,
                 |ctx, _class| {
-                    // On (re-)open, move to screen center explicitly —
-                    // with_position alone only applies to the first-ever
-                    // creation; a reopen would otherwise land wherever the
-                    // user last moved it, which can be offscreen.
-                    if needs_recenter {
-                        if let Some(p) = center_pos {
+                    // Re-assert always-on-top + position when the
+                    // overlay transitions from Idle → active. Builder
+                    // hints only apply at viewport creation; a
+                    // long-running xsay where state oscillates needs
+                    // explicit commands so the overlay keeps returning
+                    // to the right corner, above everything else.
+                    if became_active {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(
+                            egui::WindowLevel::AlwaysOnTop,
+                        ));
+                        if let Some(p) = overlay_pos {
                             ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(p));
                         }
                     }
-                    // Tray "Show Settings" while the window is already
-                    // open → restore from minimized + raise to foreground
-                    // + focus. Using only Focus doesn't un-minimize on most
-                    // compositors, leaving the tray click looking broken.
-                    if focus_req {
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-                    }
-                    if ctx.input(|i| i.viewport().close_requested()) {
-                        *show_ref = false;
-                    }
-                    if settings_ui::render(ctx, settings_ref) {
-                        *show_ref = false;
+
+                    match &overlay_state {
+                        AppState::Idle => {}
+                        AppState::Recording { .. } => {
+                            *animation_phase += 0.08;
+                            render_mic_glyph(
+                                ctx,
+                                crate::theme::REC,
+                                "● REC",
+                                crate::theme::REC,
+                                /*pulse=*/ true,
+                                *animation_phase,
+                                *dots_phase,
+                            );
+                        }
+                        AppState::Transcribing => {
+                            *dots_phase += 0.05;
+                            render_mic_glyph(
+                                ctx,
+                                crate::theme::ACCENT,
+                                "识别中",
+                                crate::theme::ACCENT,
+                                /*pulse=*/ false,
+                                *animation_phase,
+                                *dots_phase,
+                            );
+                        }
+                        AppState::Injecting => {
+                            *dots_phase += 0.05;
+                            render_mic_glyph(
+                                ctx,
+                                crate::theme::SUCCESS,
+                                "输入中",
+                                crate::theme::SUCCESS,
+                                /*pulse=*/ false,
+                                *animation_phase,
+                                *dots_phase,
+                            );
+                        }
                     }
                 },
             );
-        } else {
-            // Reset the "centered" flag so the NEXT open re-centers once.
-            self.settings_centered = false;
         }
-    }
+        self.was_idle = is_idle;
 
-    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
-        [0.0, 0.0, 0.0, 0.0]
+        // Silence unused-field warnings — these still get used by
+        // callers elsewhere in the file.
+        let _ = &self.settings_focus_requested;
+        let _ = &self.settings_centered;
+        let _ = &self.shared_position;
+        let _ = &self.last_positioned_size;
+        let _ = &self.last_positioned_corner;
+        let _ = &self.show_settings;
     }
 }
 
+#[allow(dead_code)] // kept for future standalone-overlay mode
 impl XsayOverlay {
     fn render_recording(&self, ctx: &egui::Context) {
         self.render_state_with_mic(
@@ -293,10 +299,36 @@ impl XsayOverlay {
         );
     }
 
+    /// Same as `render_state_with_mic` but receives animation state
+    /// explicitly rather than reading from `&self`, so it can be called
+    /// from inside a nested-viewport callback where `self` is already
+    /// borrowed elsewhere.
+    fn render_state_with_mic_explicit(
+        &self,
+        ctx: &egui::Context,
+        circle_color: egui::Color32,
+        bottom_label: &str,
+        label_color: egui::Color32,
+        pulse: bool,
+        animation_phase: f32,
+        dots_phase: f32,
+    ) {
+        render_mic_glyph(
+            ctx,
+            circle_color,
+            bottom_label,
+            label_color,
+            pulse,
+            animation_phase,
+            dots_phase,
+        );
+    }
+
     /// Draws a colored filled circle with a white microphone glyph in the
     /// center, plus a bottom label. Used by Recording (pulsing red),
     /// Transcribing (blue) and Injecting (green) — same visual language
     /// across all active states.
+    #[allow(dead_code)]
     fn render_state_with_mic(
         &self,
         ctx: &egui::Context,
@@ -381,36 +413,115 @@ impl XsayOverlay {
         });
     }
 
+    #[allow(dead_code)]
     fn render_status(&self, ctx: &egui::Context, label: &str, color: egui::Color32) {
         self.render_state_with_mic(ctx, color, label, color, /*pulse=*/ false);
     }
 }
 
+/// Free-function mic-glyph renderer: pulled out of XsayOverlay so the
+/// nested-viewport closure can call it without holding a second borrow
+/// of `self` (the closure already mutably borrows animation_phase/dots).
+fn render_mic_glyph(
+    ctx: &egui::Context,
+    circle_color: egui::Color32,
+    bottom_label: &str,
+    label_color: egui::Color32,
+    pulse: bool,
+    animation_phase: f32,
+    dots_phase: f32,
+) {
+    let bg = egui::Color32::from_rgba_premultiplied(0x14, 0x14, 0x1A, 210);
+    let frame = egui::Frame::new()
+        .fill(bg)
+        .corner_radius(crate::theme::radius_xxl());
+
+    #[allow(deprecated)]
+    egui::CentralPanel::default().frame(frame).show(ctx, |ui| {
+        let painter = ui.painter();
+        let rect = ui.max_rect();
+        let center = rect.center();
+
+        if pulse {
+            let p = animation_phase.sin() * 0.5 + 0.5;
+            let ring_r = 32.0 + p * 10.0;
+            let [r, g, b, _] = circle_color.to_array();
+            let alpha = (180.0 * (1.0 - p * 0.4)) as u8;
+            painter.circle_stroke(
+                center,
+                ring_r,
+                egui::Stroke::new(
+                    2.5,
+                    egui::Color32::from_rgba_premultiplied(r, g, b, alpha),
+                ),
+            );
+        }
+
+        painter.circle_filled(center, 22.0, circle_color);
+
+        // Mic body
+        let mic_rect = egui::Rect::from_center_size(
+            center + egui::vec2(0.0, -6.0),
+            egui::vec2(10.0, 18.0),
+        );
+        painter.rect_filled(mic_rect, egui::CornerRadius::same(5), egui::Color32::WHITE);
+
+        // Stand
+        let sy = center.y + 11.0;
+        let stroke = egui::Stroke::new(2.0, egui::Color32::WHITE);
+        painter.line_segment(
+            [egui::pos2(center.x - 12.0, sy), egui::pos2(center.x + 12.0, sy)],
+            stroke,
+        );
+        painter.line_segment(
+            [egui::pos2(center.x - 12.0, sy), egui::pos2(center.x - 12.0, sy - 5.0)],
+            stroke,
+        );
+        painter.line_segment(
+            [egui::pos2(center.x + 12.0, sy), egui::pos2(center.x + 12.0, sy - 5.0)],
+            stroke,
+        );
+        painter.line_segment(
+            [egui::pos2(center.x, sy), egui::pos2(center.x, sy + 6.0)],
+            stroke,
+        );
+
+        ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
+            ui.add_space(4.0);
+            let dots = if pulse {
+                String::new()
+            } else {
+                ".".repeat((dots_phase as usize % 4) + 1)
+            };
+            ui.label(
+                egui::RichText::new(format!("{}{}", bottom_label, dots))
+                    .color(label_color)
+                    .size(crate::theme::FONT_XS),
+            );
+        });
+    });
+}
+
 pub fn build_native_options(_config: &crate::config::OverlayConfig) -> eframe::NativeOptions {
-    // Start invisible — we go to Idle immediately and only show the window
-    // when the user starts recording. The first update() call flips Visible
-    // based on AppState.
+    // Main viewport is the settings window — a real, decorated, resizable
+    // app window that appears in the GNOME taskbar and responds to
+    // close/minimize/focus like every other desktop app. The recording
+    // overlay is a separate nested viewport spawned only when xsay is
+    // actively recording / transcribing / injecting.
+    //
+    // The window starts VISIBLE (show_settings used to gate this but is
+    // no longer needed now that the main viewport IS the settings
+    // panel). User "close" triggers a CancelClose + Visible(false) in
+    // App::ui so the window hides to tray instead of killing xsay.
     eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            // Title + app_id so GNOME shows "xsay" in its "not responding"
-            // prompts and task switcher instead of "Unknown". Also helps
-            // the compositor group this window with the tray icon.
             .with_title("xsay")
             .with_app_id("xsay")
-            .with_decorations(false)
-            .with_transparent(true)
-            .with_always_on_top()
-            .with_mouse_passthrough(true) // pure feedback widget; no clicks
-            .with_resizable(false)
-            // Start VISIBLE (transparent + mouse-passthrough = invisible
-            // to the user but tracked by the compositor). Previously we
-            // started with_visible(false) and flipped Visible(true) only
-            // on Idle→active transitions, which raced short hotkey taps:
-            // if the state machine returned to Idle before the Visible
-            // command reached the compositor, the overlay never showed.
-            // An always-live transparent window eliminates that race.
-            .with_inner_size([120.0, 120.0])
-            .with_position(egui::pos2(1200.0, 20.0)),
+            .with_decorations(false) // we draw our own custom title bar
+            .with_transparent(false)
+            .with_resizable(true)
+            .with_inner_size([700.0, 660.0])
+            .with_min_inner_size([640.0, 540.0]),
         ..Default::default()
     }
 }

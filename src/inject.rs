@@ -267,13 +267,13 @@ pub(crate) mod uinput_paste {
         Ok(dev)
     }
 
-    /// Emit KEY_UP events for a set of keycodes. Used by hotkey_evdev
-    /// right after it grabs a physical keyboard — the compositor has
-    /// already seen the physical KEY_DOWN that triggered our hotkey,
-    /// so without a matching KEY_UP it auto-repeats (typing "xxxxx"
-    /// into the focused app for as long as the hotkey is held). A
-    /// synthesized release via uinput looks to the compositor like the
-    /// user let go, stopping the repeat.
+    /// Emit KEY_UP events for a set of keycodes. Previously used by
+    /// hotkey_evdev after grabbing a physical keyboard to halt the
+    /// compositor's auto-repeat for hotkey chord keys. The grab-based
+    /// approach was dropped (it had rare but severe failure modes that
+    /// could lock the user's entire keyboard), but the helper stays
+    /// public(crate) in case future surgical uses arise.
+    #[allow(dead_code)]
     pub fn send_release(codes: &[evdev::KeyCode]) {
         let mut guard = DEVICE.lock();
         if guard.is_none() {
