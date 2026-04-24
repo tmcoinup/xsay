@@ -120,6 +120,25 @@ pub fn transcribe(backend: &str, samples: &[f32], opts: &OnnxOptions) -> Option<
     }
 }
 
+/// Eagerly initialize the recognizer for `backend` so the first real
+/// transcription doesn't pay the ~500ms–3s ONNX session-construction
+/// cost (Paraformer especially tends to be slow on first call). Fed a
+/// 500ms silent buffer to warm up the compute graph; the result is
+/// discarded. Safe to call on non-ONNX backends (no-op).
+pub fn warmup(backend: &str, opts: &OnnxOptions) {
+    if !is_installed(backend) {
+        return;
+    }
+    let silence = vec![0.0_f32; 8000]; // 0.5s at 16 kHz
+    let start = std::time::Instant::now();
+    let _ = transcribe(backend, &silence, opts);
+    log::info!(
+        "{} warmup complete in {:?} — first real utterance will be snappy",
+        backend,
+        start.elapsed()
+    );
+}
+
 fn transcribe_sensevoice(backend: &str, samples: &[f32], opts: &OnnxOptions) -> Option<String> {
     if !is_installed(backend) {
         let path = sensevoice_dir_for(backend).unwrap_or_else(sensevoice_dir);

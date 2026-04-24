@@ -859,10 +859,26 @@ fn switch_model(model: &ModelInfo, local_path: &PathBuf, state: &mut SettingsSta
     // initializes on first use and doesn't watch the model_reload channel.
     if model.backend == "whisper" {
         let _ = state.model_reload_tx.send(local_path.clone());
+    } else {
+        // Kick off an async warmup for the newly-selected ONNX backend so
+        // the first post-switch F2 press doesn't eat the ~500ms–3s
+        // session-construction cost. Paraformer cold-start is ~3 seconds,
+        // long enough that the overlay's "识别中" animation would play
+        // once and stop before any text ever arrives.
+        #[cfg(any(feature = "sensevoice", feature = "sensevoice-cuda"))]
+        {
+            let backend = model.backend.to_string();
+            std::thread::spawn(move || {
+                crate::sensevoice::warmup(
+                    &backend,
+                    &crate::sensevoice::OnnxOptions::default(),
+                );
+            });
+        }
     }
     state.current_model_dirty = true;
     state.set_status(
-        format!("✓ 已切换到 {}（后端 = {}）", model.name, model.backend),
+        format!("✓ 已切换到 {}（后端 = {}，正在预热…）", model.name, model.backend),
         crate::theme::SUCCESS,
     );
 }

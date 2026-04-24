@@ -108,15 +108,12 @@ pub static MODELS: &[ModelInfo] = &[
              sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17.tar.bz2",
         onnx_model_file: "model.onnx",
     },
-    ModelInfo {
-        name: "SenseVoice Large",
-        filename: "sensevoice-large",
-        size_mb: 0,
-        desc: "1587M 参数，50+ 语言；当前未发布 sherpa-onnx 可安装包，暂不可下载",
-        backend: "sensevoice-large",
-        archive_url: "",
-        onnx_model_file: "",
-    },
+    // NOTE: SenseVoice Large (1.5B params) is not currently published as
+    // a sherpa-onnx ONNX export by upstream, so we can't wire it up as a
+    // selectable model. Keeping this comment as a reminder — if k2-fsa
+    // releases one, add an entry here pointing at the archive URL and
+    // the runtime will Just Work (backend "sensevoice-large" falls
+    // through the onnx dispatcher already; it just needs a model file).
     ModelInfo {
         name: "Paraformer-zh",
         filename: "paraformer",

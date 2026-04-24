@@ -1,1 +1,32 @@
+# Cargo build artifacts
 /target
+
+# Local multi-variant output from ./build.sh
+/dist
+
+# Editor / IDE scratch
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS clutter
+.DS_Store
+Thumbs.db
+
+# Secrets & per-machine config
+.env
+*.pem
+.cargo/credentials
+.cargo/credentials.toml
+
+# Local snap/flatpak build scratch
+parts/
+stage/
+prime/
+*.snap
+
+# Ad-hoc experimentation that shouldn't be committed
+scratch/
+/tmp_*

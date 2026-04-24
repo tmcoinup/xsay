@@ -40,6 +40,26 @@ pub fn run_transcribe_thread(
         ),
     }
 
+    // Pre-warm the selected ONNX backend so the first F2 press doesn't
+    // eat a 500ms–3s ONNX session-construction wait. Paraformer in
+    // particular takes multiple seconds cold. Warmup runs in this same
+    // transcribe thread so it doesn't race with incoming TranscribeReqs.
+    #[cfg(any(feature = "sensevoice", feature = "sensevoice-cuda"))]
+    if is_onnx_backend(&initial_backend) {
+        let provider = if cfg!(feature = "sensevoice-cuda") {
+            "cuda".to_string()
+        } else {
+            "cpu".to_string()
+        };
+        let opts = crate::sensevoice::OnnxOptions {
+            language: "auto".into(),
+            use_itn: true,
+            provider,
+            num_threads: 4,
+        };
+        crate::sensevoice::warmup(&initial_backend, &opts);
+    }
+
     loop {
         select! {
             recv(reload_rx) -> new_path => {

@@ -1,0 +1,12 @@
+[Desktop Entry]
+Name=xsay
+GenericName=Voice Input
+Comment=Offline voice-to-text with a configurable hotkey
+Exec=xsay
+Icon=${SNAP}/share/icons/hicolor/256x256/apps/xsay.png
+Terminal=false
+Type=Application
+Categories=Utility;Office;
+Keywords=voice;speech;dictation;whisper;transcribe;
+StartupNotify=false
+X-GNOME-UsesNotifications=true

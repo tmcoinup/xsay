@@ -351,31 +351,39 @@ fn render_overlay_card(ui: &mut egui::Ui, state: &SettingsState) {
         ];
         let current_code = state.shared_position.lock().clone();
 
-        // Render as a 2-column radio grid so each option reads at a glance.
-        ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing = egui::vec2(20.0, 8.0);
-            for (code, label, _) in positions {
-                let selected = current_code == *code;
-                ui.horizontal(|ui| {
-                    if theme::radio_button(ui, selected, crate::theme::ACCENT).clicked() {
-                        *state.shared_position.lock() = code.to_string();
-                        if let Ok(mut cfg) = Config::load() {
-                            cfg.overlay.position = code.to_string();
-                            if let Ok(p) = Config::config_path() {
-                                if let Ok(t) = toml::to_string_pretty(&cfg) {
-                                    let _ = std::fs::write(p, t);
+        // Fixed 3-column Grid so the 7 options always fit inside the
+        // settings window (previously a horizontal_wrapped flow pushed
+        // the 7th item "屏幕正中" off the right edge because egui doesn't
+        // break inside a nested ui::horizontal atom).
+        egui::Grid::new("overlay_positions_grid")
+            .num_columns(3)
+            .spacing([24.0, 10.0])
+            .show(ui, |ui| {
+                for (i, (code, label, _)) in positions.iter().enumerate() {
+                    let selected = current_code == *code;
+                    ui.horizontal(|ui| {
+                        if theme::radio_button(ui, selected, crate::theme::ACCENT).clicked() {
+                            *state.shared_position.lock() = code.to_string();
+                            if let Ok(mut cfg) = Config::load() {
+                                cfg.overlay.position = code.to_string();
+                                if let Ok(p) = Config::config_path() {
+                                    if let Ok(t) = toml::to_string_pretty(&cfg) {
+                                        let _ = std::fs::write(p, t);
+                                    }
                                 }
                             }
                         }
+                        ui.add_space(4.0);
+                        ui.label(
+                            egui::RichText::new(*label)
+                                .color(crate::theme::TEXT_PRIMARY)
+                                .size(crate::theme::FONT_BODY),
+                        );
+                    });
+                    if (i + 1) % 3 == 0 {
+                        ui.end_row();
                     }
-                    ui.add_space(4.0);
-                    ui.label(
-                        egui::RichText::new(*label)
-                            .color(crate::theme::TEXT_PRIMARY)
-                            .size(crate::theme::FONT_BODY),
-                    );
-                });
-            }
-        });
+                }
+            });
     });
 }
