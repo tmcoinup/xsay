@@ -82,6 +82,22 @@ fn process_request(
         return;
     }
 
+    // RMS energy gate — runs before any backend. Every ASR model we
+    // support (Whisper, SenseVoice, Paraformer) hallucinates confidently
+    // on near-silent audio: Whisper outputs training fanfic (字幕志愿者,
+    // 謝謝大家收看), SenseVoice falls back to conversational fillers
+    // ("Okay.", "Yes.", "嗯。", "好的。"). Gate at the audio level so the
+    // model never sees input that can't plausibly contain speech.
+    let peak = peak_rms(&req.samples);
+    if peak < 0.008 {
+        log::debug!(
+            "Skipping transcribe: peak RMS {:.4} below speech threshold",
+            peak
+        );
+        let _ = transcript_tx.send(TranscriptSeg { text: String::new() });
+        return;
+    }
+
     // Backend dispatch — pluggable so Whisper can coexist with ONNX-based
     // backends (SenseVoice, Paraformer, ...). Non-whisper backends are
     // feature-gated; when the feature is off we fall through to Whisper
@@ -310,13 +326,49 @@ fn is_silence_marker(segment: &str) -> bool {
 /// several times — e.g. "打赏 打赏 打赏". Any 2-4 char substring that
 /// appears 3+ times in a short segment is almost certainly hallucinated.
 fn is_known_hallucination(s: &str) -> bool {
-    let norm_full = s.to_lowercase();
-    // Normalize trim for exact-ish comparison on whole-segment matches.
-    let norm: String = norm_full
+    // Normalize for comparison: lowercase + strip surrounding whitespace
+    // and common closing punctuation so "Okay." and "okay" and "Okay "
+    // are treated the same.
+    let norm: String = s
+        .trim()
+        .to_lowercase()
         .trim_end_matches(['.', '。', '!', '！', '?', '？', ',', '，', ' '])
         .to_string();
 
-    const HALLUCINATIONS: &[&str] = &[
+    // Exact-match-only fillers. These are short enough that a substring
+    // match would swallow legitimate phrases ("好的，继续" contains "好的").
+    // Only a whole-segment match flags them as hallucination.
+    const EXACT_HALLUCINATIONS: &[&str] = &[
+        // SenseVoice's filler fallback set when audio is quiet-but-not-silent
+        "okay",
+        "ok",
+        "yes",
+        "yeah",
+        "no",
+        "嗯",
+        "啊",
+        "哦",
+        "唉",
+        "好",
+        "好的",
+        "是",
+        "是的",
+        "对",
+        "对的",
+        "mm",
+        "hmm",
+        "thank you",
+        "thanks",
+    ];
+    if EXACT_HALLUCINATIONS.iter().any(|h| norm == *h) {
+        return true;
+    }
+
+    // Substring-match hallucinations. These are distinctive long phrases
+    // that (a) almost never show up in normal speech and (b) often carry
+    // trailing random names (e.g. "字幕志愿者 杨茜茜"). Match anywhere in
+    // the segment so the attached name doesn't prevent the filter.
+    const SUBSTRING_HALLUCINATIONS: &[&str] = &[
         // Chinese — YouTube / TV closers
         "謝謝大家收看",
         "谢谢大家收看",
@@ -383,12 +435,11 @@ fn is_known_hallucination(s: &str) -> bool {
         "subscribe to my channel",
         "like and subscribe",
         "see you next time",
-        "thank you",
-        "thanks",
     ];
-    if HALLUCINATIONS.iter().any(|h| norm.contains(h)) {
+    if SUBSTRING_HALLUCINATIONS.iter().any(|h| norm.contains(h)) {
         return true;
     }
+
     has_repetition(&norm)
 }
 
@@ -425,6 +476,35 @@ fn has_repetition(s: &str) -> bool {
         }
     }
     false
+}
+
+/// Peak RMS over 20ms windows. Using a windowed peak (not global RMS)
+/// means a single loud burst in an otherwise silent clip still registers
+/// as speech — global RMS would average it away. 20ms at 16kHz = 320
+/// samples, small enough to catch a single syllable but large enough that
+/// ambient electrical noise averages out.
+fn peak_rms(samples: &[f32]) -> f32 {
+    const WINDOW: usize = 320;
+    if samples.len() < WINDOW {
+        return rms_block(samples);
+    }
+    let mut peak: f32 = 0.0;
+    for start in (0..samples.len()).step_by(WINDOW) {
+        let end = (start + WINDOW).min(samples.len());
+        let r = rms_block(&samples[start..end]);
+        if r > peak {
+            peak = r;
+        }
+    }
+    peak
+}
+
+fn rms_block(samples: &[f32]) -> f32 {
+    if samples.is_empty() {
+        return 0.0;
+    }
+    let sum_sq: f32 = samples.iter().map(|s| s * s).sum();
+    (sum_sq / samples.len() as f32).sqrt()
 }
 
 fn is_cjk(c: char) -> bool {
