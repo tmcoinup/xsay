@@ -1,6 +1,6 @@
 name: xsay
 base: core22
-version: '0.1.0'
+version: '0.1.1'
 summary: Offline voice-to-text with a configurable hotkey
 description: |
   xsay captures microphone audio while a configurable hotkey is held

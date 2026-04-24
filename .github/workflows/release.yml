@@ -1,9 +1,9 @@
 name: release
 
-# Build xsay binaries for each supported (OS, GPU-backend) combination on a
-# version tag (`v*`) and attach them to the matching GitHub Release.
-# Manual dispatch is also wired so you can test-drive the workflow without
-# cutting a tag.
+# Build xsay binaries + native installers for each supported (OS, GPU-
+# backend) combination on a version tag (`v*`) and attach them to the
+# matching GitHub Release. Manual dispatch is wired too, so you can
+# dry-run the workflow without cutting a tag.
 
 on:
   push:
@@ -12,33 +12,47 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write  # needed to upload release assets
+  contents: write  # upload release assets
 
 jobs:
   build:
     name: ${{ matrix.label }}
     runs-on: ${{ matrix.os }}
     strategy:
-      # Don't abort other builds just because one GPU variant's toolchain
-      # is missing from the runner image — a CPU binary is always useful.
+      # One variant failing (missing toolchain on a runner, transient
+      # apt hiccup, etc.) shouldn't prevent the others from uploading —
+      # a CPU Linux binary is always useful even if Vulkan fails.
       fail-fast: false
       matrix:
         include:
-          # Linux — CPU (works everywhere, primary download).
+          # Linux — CPU (primary download, ships the .deb too).
           - os: ubuntu-22.04
             label: linux-x64-cpu
             features: ""
             apt: "libx11-dev libxtst-dev libasound2-dev libgtk-3-dev libayatana-appindicator3-dev libxdo-dev cmake pkg-config"
+            make_deb: true
+            binary_name: xsay
           # Linux — Vulkan (cross-vendor GPU, NVIDIA/AMD/Intel).
           - os: ubuntu-22.04
             label: linux-x64-vulkan
             features: "vulkan"
-            apt: "libx11-dev libxtst-dev libasound2-dev libgtk-3-dev libayatana-appindicator3-dev libxdo-dev libvulkan-dev glslang-tools cmake pkg-config"
-          # macOS — Metal (Apple GPU acceleration, bundled with OS).
+            apt: "libx11-dev libxtst-dev libasound2-dev libgtk-3-dev libayatana-appindicator3-dev libxdo-dev libvulkan-dev glslang-tools glslc cmake pkg-config"
+            make_deb: false
+            binary_name: xsay
+          # macOS Apple Silicon — Metal GPU.
           - os: macos-14
             label: macos-arm64-metal
             features: "metal"
             apt: ""
+            make_deb: false
+            binary_name: xsay
+          # Windows — raw .exe + NSIS installer.
+          - os: windows-latest
+            label: windows-x64
+            features: ""
+            apt: ""
+            make_deb: false
+            binary_name: xsay.exe
 
     steps:
       - uses: actions/checkout@v4
@@ -67,26 +81,51 @@ jobs:
             cargo build --release
           fi
 
-      - name: Stage artifact
+      - name: Stage raw binary
         shell: bash
         run: |
           mkdir -p dist
           if [ "${{ runner.os }}" = "Windows" ]; then
-            cp "target/release/xsay.exe" "dist/xsay-${{ matrix.label }}.exe"
+            cp "target/release/${{ matrix.binary_name }}" "dist/xsay-${{ matrix.label }}.exe"
           else
-            cp "target/release/xsay" "dist/xsay-${{ matrix.label }}"
+            cp "target/release/${{ matrix.binary_name }}" "dist/xsay-${{ matrix.label }}"
             strip "dist/xsay-${{ matrix.label }}" || true
           fi
+
+      # ---- .deb for Linux CPU ----
+      - name: Install cargo-deb
+        if: matrix.make_deb
+        run: cargo install --locked cargo-deb
+
+      - name: Build .deb
+        if: matrix.make_deb
+        shell: bash
+        run: |
+          cargo deb --no-build
+          cp target/debian/*.deb dist/
+
+      # ---- NSIS installer for Windows ----
+      - name: Build NSIS installer (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          # NSIS (makensis) is pre-installed on windows-latest runners.
+          $version = "${{ github.ref_name }}" -replace '^v',''
+          if ([string]::IsNullOrEmpty($version)) { $version = "0.0.0-dev" }
+          Copy-Item "target/release/xsay.exe" "windows/xsay.exe"
+          & makensis /DAPP_VERSION="$version" windows/installer.nsi
+          Move-Item "windows/xsay-*-setup.exe" "dist/"
+        continue-on-error: true
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
           name: xsay-${{ matrix.label }}
-          path: dist/xsay-${{ matrix.label }}*
+          path: dist/xsay-*
           if-no-files-found: error
 
       - name: Attach to release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/xsay-${{ matrix.label }}*
+          files: dist/xsay-*

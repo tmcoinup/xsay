@@ -1,6 +1,6 @@
 [package]
 name = "xsay"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "AI voice input tool — hold a hotkey to record, release to transcribe and type"
 license = "MIT"
