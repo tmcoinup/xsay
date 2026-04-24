@@ -73,6 +73,19 @@ pub fn spawn_hotkey_threads(
     Ok(n)
 }
 
+/// Per-iteration signal from handle_key back to run_device_loop for
+/// grabbing / releasing exclusive access to the physical device.
+enum PostKey {
+    /// Nothing needs to change.
+    None,
+    /// The hotkey just fired a recording-start event. Take exclusive
+    /// access so the compositor stops seeing the held keys, and
+    /// synthesize release events for the chord so auto-repeat halts.
+    Grab(Vec<EvKey>),
+    /// The hotkey fired recording-stop. Release exclusive access.
+    Ungrab,
+}
+
 fn run_device_loop(
     mut device: Device,
     event_tx: Sender<AppEvent>,
@@ -94,21 +107,70 @@ fn run_device_loop(
     const BASE_BACKOFF_MS: u64 = 50;
     let mut consecutive_errors: u32 = 0;
 
+    // Track whether WE hold exclusive access to this device. Flipping on
+    // Grab / off on Ungrab lets the outer loop handle the syscall once
+    // per edge instead of per-event.
+    let mut grabbed = false;
+
     loop {
-        match device.fetch_events() {
-            Ok(events) => {
+        // Collect key events into an owned buffer first — fetch_events
+        // returns an iterator that mutably borrows `device`, which would
+        // prevent us from calling device.grab()/ungrab() inside the
+        // loop body. Snapshot-and-release is cheaper than it looks:
+        // InputEvent is Copy and we're talking single-digit events per
+        // poll in practice.
+        let pending: Result<Vec<InputEvent>, _> = device
+            .fetch_events()
+            .map(|iter| iter.filter(|ev| ev.event_type() == EventType::KEY).collect());
+
+        match pending {
+            Ok(key_events) => {
                 consecutive_errors = 0;
-                for ev in events {
-                    if ev.event_type() == EventType::KEY {
-                        handle_key(
-                            &ev,
-                            &event_tx,
-                            &shared_config,
-                            &capture_active,
-                            &capture_slot,
-                            &recording,
-                            &held_keys,
-                        );
+                for ev in key_events {
+                    match handle_key(
+                        &ev,
+                        &event_tx,
+                        &shared_config,
+                        &capture_active,
+                        &capture_slot,
+                        &recording,
+                        &held_keys,
+                    ) {
+                        PostKey::None => {}
+                        PostKey::Grab(chord_keys) => {
+                            if !grabbed {
+                                match device.grab() {
+                                    Ok(()) => {
+                                        grabbed = true;
+                                        log::debug!("evdev: grabbed keyboard for hotkey hold");
+                                        // Tell the compositor the chord
+                                        // keys were released so its
+                                        // auto-repeat state clears.
+                                        // Without this, an Alt+X hotkey
+                                        // held for 2s types "xxxx..."
+                                        // into the focused app even
+                                        // though we now own the device.
+                                        crate::inject::uinput_paste::send_release(&chord_keys);
+                                    }
+                                    Err(e) => {
+                                        log::warn!(
+                                            "evdev: grab failed ({}) — \
+                                             hotkey keys will keep typing",
+                                            e
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                        PostKey::Ungrab => {
+                            if grabbed {
+                                if let Err(e) = device.ungrab() {
+                                    log::warn!("evdev: ungrab failed: {}", e);
+                                }
+                                grabbed = false;
+                                log::debug!("evdev: ungrabbed keyboard");
+                            }
+                        }
                     }
                 }
             }
@@ -143,13 +205,13 @@ fn handle_key(
     capture_slot: &Arc<CaptureSlot>,
     recording: &Arc<AtomicBool>,
     held_keys: &Arc<Mutex<HashSet<u16>>>,
-) {
+) -> PostKey {
     let code = ev.code();
     let value = ev.value();
     let pressed = value == 1;
     let released = value == 0;
     if !pressed && !released {
-        return; // ignore auto-repeat (value == 2)
+        return PostKey::None; // ignore auto-repeat (value == 2)
     }
 
     {
@@ -166,7 +228,7 @@ fn handle_key(
         if pressed {
             record_capture_evdev(code, held_keys, capture_slot);
         }
-        return;
+        return PostKey::None;
     }
 
     if pressed && code == EvKey::KEY_ESC.code() {
@@ -183,7 +245,7 @@ fn handle_key(
     });
 
     if Some(code) != target {
-        return;
+        return PostKey::None;
     }
 
     if pressed && mods_ok {
@@ -191,20 +253,43 @@ fn handle_key(
             if recording.load(Ordering::SeqCst) {
                 recording.store(false, Ordering::SeqCst);
                 let _ = event_tx.send(AppEvent::HotkeyReleased);
+                return PostKey::Ungrab;
             } else {
                 recording.store(true, Ordering::SeqCst);
                 let _ = event_tx.send(AppEvent::HotkeyPressed);
+                return PostKey::Grab(chord_keycodes(&cfg));
             }
         } else if !recording.load(Ordering::SeqCst) {
             recording.store(true, Ordering::SeqCst);
             let _ = event_tx.send(AppEvent::HotkeyPressed);
+            return PostKey::Grab(chord_keycodes(&cfg));
         }
     }
 
     if released && !is_toggle && recording.load(Ordering::SeqCst) {
         recording.store(false, Ordering::SeqCst);
         let _ = event_tx.send(AppEvent::HotkeyReleased);
+        return PostKey::Ungrab;
     }
+
+    PostKey::None
+}
+
+/// Resolve the configured hotkey chord (modifiers + main key) into
+/// evdev::KeyCode values — the set we synthetically release after
+/// grabbing the device, so the compositor's auto-repeat for the chord
+/// keys stops. Unknown names are silently dropped.
+fn chord_keycodes(cfg: &HotkeyConfig) -> Vec<EvKey> {
+    let mut out = Vec::new();
+    for m in &cfg.modifiers {
+        if let Some(code) = modifier_to_evdev(m) {
+            out.push(EvKey(code));
+        }
+    }
+    if let Some(code) = key_name_to_evdev(&cfg.key) {
+        out.push(EvKey(code));
+    }
+    out
 }
 
 fn key_name_to_evdev(name: &str) -> Option<u16> {

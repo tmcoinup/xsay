@@ -127,13 +127,19 @@ fn inject_via_clipboard(text: &str, delay_ms: u64, paste_shortcut: &str) {
     }
 }
 
-/// Persistent /dev/uinput virtual keyboard for Wayland-native paste.
-/// Created lazily on first use and kept alive for the process lifetime —
-/// per-paste re-creation (as `ydotool` without its daemon does) has a
-/// 50-150ms enumeration window during which emits are silently dropped,
-/// which is why subprocess-based paste unreliably lands.
+/// Persistent /dev/uinput virtual keyboard for Wayland-native paste AND
+/// for synthesizing hotkey-release events after hotkey_evdev grabs a
+/// physical keyboard (see hotkey_evdev::run_device_loop). Created lazily
+/// on first use and kept alive for the process lifetime — per-use
+/// re-creation (as `ydotool` without its daemon does) has a 50-150ms
+/// enumeration window during which emits are silently dropped, which
+/// is why subprocess-based paste unreliably lands.
+///
+/// Module is pub(crate) so hotkey_evdev can call send_release() to
+/// cancel the compositor's held-key state when we EVIOCGRAB a device
+/// mid-chord.
 #[cfg(target_os = "linux")]
-mod uinput_paste {
+pub(crate) mod uinput_paste {
     use evdev::{AttributeSet, KeyCode, KeyEvent, uinput::VirtualDevice};
     use parking_lot::Mutex;
     use std::sync::LazyLock;
@@ -154,11 +160,101 @@ mod uinput_paste {
         Mutex::new(dev)
     });
 
-    fn create() -> std::io::Result<VirtualDevice> {
+    /// Register a broad key set so the device can synthesize release
+    /// events for arbitrary user-chosen hotkeys (modifiers + A-Z +
+    /// 0-9 + F1-F12 + common control keys). A uinput device can only
+    /// emit keys declared at build time; anything not in this set
+    /// would silently no-op when released via send_release.
+    fn register_keys() -> AttributeSet<KeyCode> {
         let mut keys = AttributeSet::<KeyCode>::new();
+        // Paste shortcut keys
         keys.insert(KeyCode::KEY_LEFTCTRL);
+        keys.insert(KeyCode::KEY_RIGHTCTRL);
         keys.insert(KeyCode::KEY_LEFTSHIFT);
-        keys.insert(KeyCode::KEY_V);
+        keys.insert(KeyCode::KEY_RIGHTSHIFT);
+        keys.insert(KeyCode::KEY_LEFTALT);
+        keys.insert(KeyCode::KEY_RIGHTALT);
+        keys.insert(KeyCode::KEY_LEFTMETA);
+        keys.insert(KeyCode::KEY_RIGHTMETA);
+        // Letters A-Z
+        for c in b'A'..=b'Z' {
+            if let Some(k) = letter_to_key(c as char) {
+                keys.insert(k);
+            }
+        }
+        // Digits 0-9
+        keys.insert(KeyCode::KEY_0);
+        keys.insert(KeyCode::KEY_1);
+        keys.insert(KeyCode::KEY_2);
+        keys.insert(KeyCode::KEY_3);
+        keys.insert(KeyCode::KEY_4);
+        keys.insert(KeyCode::KEY_5);
+        keys.insert(KeyCode::KEY_6);
+        keys.insert(KeyCode::KEY_7);
+        keys.insert(KeyCode::KEY_8);
+        keys.insert(KeyCode::KEY_9);
+        // Function keys
+        keys.insert(KeyCode::KEY_F1);
+        keys.insert(KeyCode::KEY_F2);
+        keys.insert(KeyCode::KEY_F3);
+        keys.insert(KeyCode::KEY_F4);
+        keys.insert(KeyCode::KEY_F5);
+        keys.insert(KeyCode::KEY_F6);
+        keys.insert(KeyCode::KEY_F7);
+        keys.insert(KeyCode::KEY_F8);
+        keys.insert(KeyCode::KEY_F9);
+        keys.insert(KeyCode::KEY_F10);
+        keys.insert(KeyCode::KEY_F11);
+        keys.insert(KeyCode::KEY_F12);
+        // Common non-letter hotkey keys
+        keys.insert(KeyCode::KEY_SPACE);
+        keys.insert(KeyCode::KEY_ENTER);
+        keys.insert(KeyCode::KEY_ESC);
+        keys.insert(KeyCode::KEY_TAB);
+        keys.insert(KeyCode::KEY_CAPSLOCK);
+        keys.insert(KeyCode::KEY_HOME);
+        keys.insert(KeyCode::KEY_END);
+        keys.insert(KeyCode::KEY_PAGEUP);
+        keys.insert(KeyCode::KEY_PAGEDOWN);
+        keys.insert(KeyCode::KEY_INSERT);
+        keys.insert(KeyCode::KEY_DELETE);
+        keys
+    }
+
+    fn letter_to_key(c: char) -> Option<KeyCode> {
+        match c {
+            'A' => Some(KeyCode::KEY_A),
+            'B' => Some(KeyCode::KEY_B),
+            'C' => Some(KeyCode::KEY_C),
+            'D' => Some(KeyCode::KEY_D),
+            'E' => Some(KeyCode::KEY_E),
+            'F' => Some(KeyCode::KEY_F),
+            'G' => Some(KeyCode::KEY_G),
+            'H' => Some(KeyCode::KEY_H),
+            'I' => Some(KeyCode::KEY_I),
+            'J' => Some(KeyCode::KEY_J),
+            'K' => Some(KeyCode::KEY_K),
+            'L' => Some(KeyCode::KEY_L),
+            'M' => Some(KeyCode::KEY_M),
+            'N' => Some(KeyCode::KEY_N),
+            'O' => Some(KeyCode::KEY_O),
+            'P' => Some(KeyCode::KEY_P),
+            'Q' => Some(KeyCode::KEY_Q),
+            'R' => Some(KeyCode::KEY_R),
+            'S' => Some(KeyCode::KEY_S),
+            'T' => Some(KeyCode::KEY_T),
+            'U' => Some(KeyCode::KEY_U),
+            'V' => Some(KeyCode::KEY_V),
+            'W' => Some(KeyCode::KEY_W),
+            'X' => Some(KeyCode::KEY_X),
+            'Y' => Some(KeyCode::KEY_Y),
+            'Z' => Some(KeyCode::KEY_Z),
+            _ => None,
+        }
+    }
+
+    fn create() -> std::io::Result<VirtualDevice> {
+        let keys = register_keys();
         let dev = VirtualDevice::builder()?
             .name("xsay-virtual-kbd")
             .with_keys(&keys)?
@@ -169,6 +265,30 @@ mod uinput_paste {
         std::thread::sleep(std::time::Duration::from_millis(200));
         log::info!("uinput virtual keyboard created for auto-paste");
         Ok(dev)
+    }
+
+    /// Emit KEY_UP events for a set of keycodes. Used by hotkey_evdev
+    /// right after it grabs a physical keyboard — the compositor has
+    /// already seen the physical KEY_DOWN that triggered our hotkey,
+    /// so without a matching KEY_UP it auto-repeats (typing "xxxxx"
+    /// into the focused app for as long as the hotkey is held). A
+    /// synthesized release via uinput looks to the compositor like the
+    /// user let go, stopping the repeat.
+    pub fn send_release(codes: &[evdev::KeyCode]) {
+        let mut guard = DEVICE.lock();
+        if guard.is_none() {
+            *guard = create().ok();
+        }
+        let Some(dev) = guard.as_mut() else {
+            return;
+        };
+        let events: Vec<_> = codes
+            .iter()
+            .map(|&k| *KeyEvent::new(k, 0))
+            .collect();
+        if let Err(e) = dev.emit(&events) {
+            log::warn!("uinput: synthetic release failed: {}", e);
+        }
     }
 
     /// Emit a paste key sequence. `shortcut` picks the modifier set:
