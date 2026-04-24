@@ -22,13 +22,22 @@ pub fn run_transcribe_thread(
     reload_rx: Receiver<PathBuf>,
     transcript_tx: Sender<TranscriptSeg>,
     initial_model_path: Option<PathBuf>,
+    initial_backend: String,
 ) {
-    let mut ctx: Option<WhisperContext> =
-        initial_model_path.as_ref().and_then(|p| load_model(p));
-    if ctx.is_some() {
-        log::info!("Whisper model loaded");
+    let mut ctx: Option<WhisperContext> = if initial_backend == "whisper" {
+        initial_model_path.as_ref().and_then(load_model)
     } else {
-        log::warn!("Starting without a Whisper model (transcribe requests will be ignored)");
+        None
+    };
+    match (&ctx, initial_backend.as_str()) {
+        (Some(_), "whisper") => log::info!("Whisper model loaded"),
+        (None, "whisper") => {
+            log::warn!("Starting without a Whisper model (Whisper requests will return empty text)")
+        }
+        _ => log::info!(
+            "Starting with {} backend; Whisper model loading deferred",
+            initial_backend
+        ),
     }
 
     loop {
@@ -46,13 +55,7 @@ pub fn run_transcribe_thread(
             }
             recv(req_rx) -> req => {
                 let req = match req { Ok(r) => r, Err(_) => break };
-                match &ctx {
-                    Some(c) => process_request(c, req, &transcript_tx),
-                    None => {
-                        log::warn!("No model loaded — transcribe request returning empty text");
-                        let _ = transcript_tx.send(TranscriptSeg { text: String::new() });
-                    }
-                }
+                process_request(ctx.as_ref(), req, &transcript_tx);
             }
         }
     }
@@ -74,7 +77,7 @@ fn load_model(path: &PathBuf) -> Option<WhisperContext> {
 }
 
 fn process_request(
-    ctx: &WhisperContext,
+    ctx: Option<&WhisperContext>,
     req: TranscribeReq,
     transcript_tx: &Sender<TranscriptSeg>,
 ) {
@@ -103,7 +106,7 @@ fn process_request(
     // feature-gated; when the feature is off we fall through to Whisper
     // rather than crashing, so a config pointing at an ONNX backend on a
     // binary built without that feature still produces output.
-    if req.backend == "sensevoice" || req.backend == "paraformer" {
+    if is_onnx_backend(&req.backend) {
         if try_onnx_backend(&req, transcript_tx) {
             return;
         }
@@ -113,6 +116,14 @@ fn process_request(
             req.backend
         );
     }
+
+    let Some(ctx) = ctx else {
+        log::warn!("No Whisper model loaded — transcribe request returning empty text");
+        let _ = transcript_tx.send(TranscriptSeg {
+            text: String::new(),
+        });
+        return;
+    };
 
     // Escalate from debug → info so this always appears in release logs —
     // previously a stuck inference produced a completely silent gap between
@@ -214,6 +225,10 @@ fn process_request(
     log::debug!("Transcription result: {:?}", text);
 
     let _ = transcript_tx.send(TranscriptSeg { text });
+}
+
+fn is_onnx_backend(backend: &str) -> bool {
+    backend.starts_with("sensevoice") || backend == "paraformer"
 }
 
 /// ONNX backend dispatch (SenseVoice, Paraformer). Returns `true` if we

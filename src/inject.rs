@@ -129,10 +129,7 @@ fn inject_via_clipboard(text: &str, delay_ms: u64, paste_shortcut: &str) {
 /// which is why subprocess-based paste unreliably lands.
 #[cfg(target_os = "linux")]
 mod uinput_paste {
-    use evdev::{
-        uinput::{VirtualDevice, VirtualDeviceBuilder},
-        AttributeSet, KeyCode, KeyEvent,
-    };
+    use evdev::{AttributeSet, KeyCode, KeyEvent, uinput::VirtualDevice};
     use parking_lot::Mutex;
     use std::sync::LazyLock;
 
@@ -157,7 +154,7 @@ mod uinput_paste {
         keys.insert(KeyCode::KEY_LEFTCTRL);
         keys.insert(KeyCode::KEY_LEFTSHIFT);
         keys.insert(KeyCode::KEY_V);
-        let dev = VirtualDeviceBuilder::new()?
+        let dev = VirtualDevice::builder()?
             .name("xsay-virtual-kbd")
             .with_keys(&keys)?
             .build()?;

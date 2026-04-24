@@ -1,5 +1,9 @@
 use thiserror::Error;
 
+// Some variants aren't raised today but cover the error surface we want
+// to expose to future callers — keeping them unused-but-defined is the
+// point of a typed error enum.
+#[allow(dead_code)]
 #[derive(Error, Debug)]
 pub enum XsayError {
     #[error("No config directory found")]

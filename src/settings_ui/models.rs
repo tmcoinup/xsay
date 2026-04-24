@@ -24,6 +24,9 @@ pub struct ModelInfo {
     /// For sherpa ONNX models, the full tar.bz2 URL to fetch. Whisper
     /// models leave this empty; they use hf_repo + filename instead.
     pub archive_url: &'static str,
+    /// For Sherpa ONNX models: the model file copied out of the archive
+    /// and later passed to sherpa-rs. Whisper models leave this empty.
+    pub onnx_model_file: &'static str,
 }
 
 pub static MODELS: &[ModelInfo] = &[
@@ -35,6 +38,7 @@ pub static MODELS: &[ModelInfo] = &[
         desc: "Whisper 最小款。CPU 实时因子 ~0.1x，精度一般，适合低配",
         backend: "whisper",
         archive_url: "",
+        onnx_model_file: "",
     },
     ModelInfo {
         name: "Base",
@@ -43,6 +47,7 @@ pub static MODELS: &[ModelInfo] = &[
         desc: "Whisper 入门首选。CPU 实时因子 ~0.3x，精度良好，交互流畅",
         backend: "whisper",
         archive_url: "",
+        onnx_model_file: "",
     },
     ModelInfo {
         name: "Small",
@@ -51,6 +56,7 @@ pub static MODELS: &[ModelInfo] = &[
         desc: "Whisper 中档。精度更好，CPU 实时因子 ~1x",
         backend: "whisper",
         archive_url: "",
+        onnx_model_file: "",
     },
     ModelInfo {
         name: "Medium",
@@ -59,6 +65,7 @@ pub static MODELS: &[ModelInfo] = &[
         desc: "Whisper 高精度。CPU ~3x 实时，有 GPU 缩到 ~0.3x",
         backend: "whisper",
         archive_url: "",
+        onnx_model_file: "",
     },
     ModelInfo {
         name: "Large v3",
@@ -67,6 +74,7 @@ pub static MODELS: &[ModelInfo] = &[
         desc: "Whisper 最高精度。CPU ~10x 实时（不可用），需 GPU + 4GB 显存",
         backend: "whisper",
         archive_url: "",
+        onnx_model_file: "",
     },
     ModelInfo {
         name: "Large v3 Turbo",
@@ -75,17 +83,39 @@ pub static MODELS: &[ModelInfo] = &[
         desc: "Whisper 官方蒸馏版。精度接近 Large，速度 4x 快，参数少一半",
         backend: "whisper",
         archive_url: "",
+        onnx_model_file: "",
     },
     // ---- Sherpa ONNX (requires xsay built with --features sensevoice) ----
     ModelInfo {
         name: "SenseVoice Small",
         filename: "sensevoice",
         size_mb: 234,
-        desc: "阿里开源多语言模型。中文精度超 Whisper Large，5x 快。支持中/英/日/韩/粤",
+        desc: "Sherpa ONNX int8。中文/粤语/英/日/韩，速度最快，推荐日常输入",
         backend: "sensevoice",
         archive_url:
             "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/\
+             sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17.tar.bz2",
+        onnx_model_file: "model.int8.onnx",
+    },
+    ModelInfo {
+        name: "SenseVoice Small FP32",
+        filename: "sensevoice-fp32",
+        size_mb: 894,
+        desc: "Sherpa ONNX float32。精度更稳但更占内存，CPU 速度明显慢于 int8",
+        backend: "sensevoice-fp32",
+        archive_url:
+            "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/\
              sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17.tar.bz2",
+        onnx_model_file: "model.onnx",
+    },
+    ModelInfo {
+        name: "SenseVoice Large",
+        filename: "sensevoice-large",
+        size_mb: 0,
+        desc: "1587M 参数，50+ 语言；当前未发布 sherpa-onnx 可安装包，暂不可下载",
+        backend: "sensevoice-large",
+        archive_url: "",
+        onnx_model_file: "",
     },
     ModelInfo {
         name: "Paraformer-zh",
@@ -96,5 +126,6 @@ pub static MODELS: &[ModelInfo] = &[
         archive_url:
             "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/\
              sherpa-onnx-paraformer-zh-2024-03-09.tar.bz2",
+        onnx_model_file: "model.int8.onnx",
     },
 ];

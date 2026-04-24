@@ -148,6 +148,7 @@ fn main() -> anyhow::Result<()> {
                 model_reload_rx,
                 transcript_tx,
                 mp,
+                cfg.transcription.backend.clone(),
             )
         });
     }
@@ -324,7 +325,7 @@ fn handle_audio_chunk(
 
     let should_transcribe = match state {
         AppState::Transcribing => chunk.is_final,
-        AppState::Recording { .. } => chunk.triggered_by_pause,
+        AppState::Recording { .. } => chunk.triggered_by_pause || chunk.is_final,
         _ => false,
     };
 
@@ -353,7 +354,10 @@ fn handle_audio_chunk(
 
             // If triggered by pause, stay in Recording state (key still held)
             if !chunk.triggered_by_pause {
-                // Stay in Transcribing state, waiting for result
+                let mut s = shared_state.lock();
+                if matches!(*s, AppState::Recording { .. }) {
+                    *s = AppState::Transcribing;
+                }
             }
         } else {
             log::debug!("Audio too short, skipping transcription");
@@ -397,16 +401,22 @@ fn handle_transcript(
 
     history::append(&text);
 
-    // Transition to Injecting only if we're not already there — avoids a
-    // redundant write that would stomp an in-progress Injecting state and
-    // confuse the inject_done_rx handler's Idle flip.
+    // Pause-triggered transcripts can arrive while the key is still held.
+    // Keep the visible state as Recording in that case so the release event
+    // still stops the audio thread and the recording animation keeps running.
     {
         let mut s = shared_state.lock();
-        if !matches!(*s, AppState::Injecting) {
-            *s = AppState::Injecting;
-            log::debug!("State → Injecting");
-        } else {
-            log::debug!("Queuing additional inject while previous still running");
+        match *s {
+            AppState::Recording { .. } => {
+                log::debug!("Injecting pause-triggered transcript while staying Recording");
+            }
+            AppState::Injecting => {
+                log::debug!("Queuing additional inject while previous still running");
+            }
+            _ => {
+                *s = AppState::Injecting;
+                log::debug!("State → Injecting");
+            }
         }
     }
     let _ = inject_tx.send(InjectCmd::Type(text));

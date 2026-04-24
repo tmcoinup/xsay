@@ -315,6 +315,12 @@ impl XsayOverlay {
             .fill(bg)
             .corner_radius(crate::theme::radius_xxl());
 
+        // Using `show` on a Context is the right call here: `render_state_
+        // _with_mic` is invoked from `App::ui` where we only pass a cloned
+        // Context. Suppress the deprecation note — the alternative
+        // `show_inside(&mut Ui)` would require threading the root Ui
+        // through every render helper, which obscures the flow.
+        #[allow(deprecated)]
         egui::CentralPanel::default().frame(frame).show(ctx, |ui| {
             let painter = ui.painter();
             let rect = ui.max_rect();

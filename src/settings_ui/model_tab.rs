@@ -133,13 +133,14 @@ fn render_model_row(
     let is_current = model.filename == current_filename;
     let is_this_dl = active_dl_filename == Some(model.filename);
 
-    // Sherpa models unpack into a subdirectory with model.int8.onnx +
+    // Sherpa models unpack into a subdirectory with an ONNX model +
     // tokens.txt; Whisper models are a single .bin file. Check for the
     // right artifact per backend so the UI shows accurate download state.
     let is_downloaded = if model.backend == "whisper" {
         local_path.is_file()
     } else {
-        local_path.join("model.int8.onnx").is_file()
+        !model.onnx_model_file.is_empty()
+            && local_path.join(model.onnx_model_file).is_file()
             && local_path.join("tokens.txt").is_file()
     };
     let has_partial = partial_path.exists() && !is_downloaded;
@@ -147,14 +148,18 @@ fn render_model_row(
         local_path.metadata().map(|m| m.len()).unwrap_or(0)
     } else {
         local_path
-            .join("model.int8.onnx")
+            .join(model.onnx_model_file)
             .metadata()
             .map(|m| m.len())
             .unwrap_or(0)
     };
     let partial_size = partial_path.metadata().map(|m| m.len()).unwrap_or(0);
 
-    let remote = state.remote_sizes.get(model.filename).copied().flatten();
+    let remote = if model.backend == "whisper" {
+        state.remote_sizes.get(model.filename).copied().flatten()
+    } else {
+        None
+    };
 
     let frame_color = if is_current {
         crate::theme::BG_SELECTED
@@ -186,6 +191,7 @@ fn render_model_row(
             ui.vertical(|ui| {
                 ui.set_min_width(ui.available_width());
                 render_header_row(ui, model, is_current, is_downloaded, remote, local_size);
+                render_source_row(ui, model, state, is_downloaded);
                 render_progress_row(
                     ui,
                     model,
@@ -228,8 +234,13 @@ fn render_header_row(
                 .color(crate::theme::TEXT_PRIMARY)
                 .strong(),
         );
+        let size_text = if model.size_mb == 0 {
+            format!("未发布  ·  {}", model.desc)
+        } else {
+            format!("{} MB  ·  {}", model.size_mb, model.desc)
+        };
         ui.label(
-            egui::RichText::new(format!("{} MB  ·  {}", model.size_mb, model.desc))
+            egui::RichText::new(size_text)
                 .color(crate::theme::TEXT_SECONDARY)
                 .small(),
         );
@@ -291,6 +302,75 @@ fn render_header_row(
             }
         }
     });
+}
+
+/// Shows the model's upstream URL and local cache path under the header.
+/// Useful for power-user transparency (what are we actually downloading?)
+/// and for finding files on disk when something goes wrong. Rendered as
+/// tiny monospace lines so they sit quietly below the row title.
+fn render_source_row(
+    ui: &mut egui::Ui,
+    model: &ModelInfo,
+    state: &SettingsState,
+    is_downloaded: bool,
+) {
+    let source_url = if model.backend == "whisper" {
+        format!(
+            "https://huggingface.co/{}/resolve/main/{}",
+            state.hf_repo, model.filename
+        )
+    } else if !model.archive_url.is_empty() {
+        // archive_url in models.rs includes explicit internal whitespace
+        // via `\` line continuation — re-flow for display.
+        model
+            .archive_url
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join("")
+    } else {
+        String::new()
+    };
+
+    let local_path = state.cache_dir.join(model.filename);
+    let local_path_display = format!("~/.cache/xsay/models/{}", model.filename)
+        + if model.backend == "whisper" { "" } else { "/" };
+
+    // Source URL line (hidden if not applicable, e.g. Large variant with no release yet)
+    if !source_url.is_empty() {
+        let label_prefix = if is_downloaded { "来源 " } else { "将下载自 " };
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = 2.0;
+            ui.label(
+                egui::RichText::new(label_prefix)
+                    .color(crate::theme::TEXT_DISABLED)
+                    .size(crate::theme::FONT_XS),
+            );
+            ui.label(
+                egui::RichText::new(&source_url)
+                    .color(crate::theme::TEXT_SECONDARY)
+                    .monospace()
+                    .size(crate::theme::FONT_XS),
+            );
+        });
+    }
+
+    // Local path line
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = 2.0;
+        let label = if is_downloaded { "位于 " } else { "目标 " };
+        ui.label(
+            egui::RichText::new(label)
+                .color(crate::theme::TEXT_DISABLED)
+                .size(crate::theme::FONT_XS),
+        );
+        ui.label(
+            egui::RichText::new(&local_path_display)
+                .color(crate::theme::TEXT_SECONDARY)
+                .monospace()
+                .size(crate::theme::FONT_XS),
+        );
+    });
+    let _ = local_path; // keep the resolved path available if future UI wants it
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -359,7 +439,11 @@ fn render_action_row(
             let paused = matches!(dl_state_snap, Some(DlState::Paused));
             if paused {
                 if theme::icon_link_button(ui, Icon::Play, "继续", crate::theme::ACCENT).clicked() {
-                    start_model_download(model, state);
+                    if model.backend == "whisper" {
+                        start_model_download(model, state);
+                    } else {
+                        start_sherpa_install(model, state);
+                    }
                 }
             } else if theme::icon_link_button(ui, Icon::Pause, "暂停", crate::theme::TEXT_PRIMARY)
                 .clicked()
@@ -372,7 +456,7 @@ fn render_action_row(
                 if let Some(dl) = &state.active_download {
                     let _ = dl.cmd_tx.send(DownloadCmd::Cancel);
                 }
-                state.active_download = None;
+                clear_download_state(state);
             }
 
             if let Some(DlState::Failed(e)) = dl_state_snap {
@@ -382,8 +466,12 @@ fn render_action_row(
                         .small(),
                 );
                 if theme::link_button(ui, "重试", crate::theme::ACCENT).clicked() {
-                    state.active_download = None;
-                    start_model_download(model, state);
+                    clear_download_state(state);
+                    if model.backend == "whisper" {
+                        start_model_download(model, state);
+                    } else {
+                        start_sherpa_install(model, state);
+                    }
                 }
             }
         } else {
@@ -394,6 +482,14 @@ fn render_action_row(
                 // "安装" action that shells out to curl + tar via a
                 // background thread, and let the UI poll install state.
                 if model.backend != "whisper" {
+                    if model.archive_url.is_empty() || model.onnx_model_file.is_empty() {
+                        ui.label(
+                            egui::RichText::new("暂不可安装")
+                                .color(crate::theme::TEXT_DISABLED)
+                                .small(),
+                        );
+                        return;
+                    }
                     let installing = state
                         .sherpa_installing
                         .as_ref()
@@ -450,7 +546,7 @@ fn render_action_row(
                 if theme::icon_link_button(ui, Icon::Trash, "删除", crate::theme::DANGER_HOVER)
                     .clicked()
                 {
-                    let _ = std::fs::remove_file(local_path);
+                    remove_model_path(model, local_path);
                 }
             }
 
@@ -460,10 +556,18 @@ fn render_action_row(
                 && theme::icon_link_button(ui, Icon::Trash, "删除", crate::theme::DANGER_HOVER)
                     .clicked()
             {
-                let _ = std::fs::remove_file(local_path);
+                remove_model_path(model, local_path);
             }
         }
     });
+}
+
+fn remove_model_path(model: &ModelInfo, local_path: &PathBuf) {
+    if model.backend == "whisper" {
+        let _ = std::fs::remove_file(local_path);
+    } else {
+        let _ = std::fs::remove_dir_all(local_path);
+    }
 }
 
 fn handle_download_completion(
@@ -483,7 +587,7 @@ fn handle_download_completion(
                 .unwrap_or(false)
             {
                 let plan = state.pending_sherpa_extract.take().unwrap();
-                state.active_download = None;
+                clear_download_state(state);
                 start_sherpa_extract(plan, state);
                 return;
             }
@@ -522,11 +626,18 @@ fn handle_download_completion(
                 );
             }
         }
-        state.active_download = None;
+        clear_download_state(state);
     }
     if let Some(DlState::Cancelled) = dl_state_snap {
-        state.active_download = None;
+        clear_download_state(state);
     }
+}
+
+fn clear_download_state(state: &mut SettingsState) {
+    state.active_download = None;
+    state.pending_sherpa_extract = None;
+    state.sherpa_installing = None;
+    state.sherpa_install_rx = None;
 }
 
 fn persist_config(cfg: &Config) {
@@ -622,6 +733,7 @@ fn start_sherpa_install(model: &ModelInfo, state: &mut SettingsState) {
         display_name: model.name.to_string(),
         archive_path,
         extract_to,
+        model_file: model.onnx_model_file.to_string(),
     });
     state.sherpa_installing = Some(model.filename.to_string());
     state.set_status(
@@ -642,7 +754,7 @@ fn start_sherpa_extract(plan: super::PendingSherpaExtract, state: &mut SettingsS
         crate::theme::ACCENT,
     );
     std::thread::spawn(move || {
-        let result = run_sherpa_extract(&plan.archive_path, &plan.extract_to);
+        let result = run_sherpa_extract(&plan.archive_path, &plan.extract_to, &plan.model_file);
         let _ = tx.send(result.map(|_| plan.slug));
     });
 }
@@ -650,6 +762,7 @@ fn start_sherpa_extract(plan: super::PendingSherpaExtract, state: &mut SettingsS
 fn run_sherpa_extract(
     archive: &std::path::Path,
     dest_dir: &std::path::Path,
+    model_file: &str,
 ) -> Result<(), String> {
     let extract_tmp =
         std::env::temp_dir().join(format!("xsay-extract-{}", std::process::id()));
@@ -682,7 +795,7 @@ fn run_sherpa_extract(
         .map(|e| e.path())
         .ok_or_else(|| "archive had no inner directory".to_string())?;
 
-    for fname in ["model.int8.onnx", "tokens.txt"] {
+    for fname in [model_file, "tokens.txt"] {
         let src = inner_dir.join(fname);
         let dst = dest_dir.join(fname);
         if !src.exists() {
@@ -761,6 +874,9 @@ fn check_all_updates(state: &mut SettingsState) {
     state.checking_updates = true;
 
     for model in MODELS {
+        if model.backend != "whisper" {
+            continue;
+        }
         let url = download::hf_url(&state.hf_repo, model.filename);
         download::check_remote_size(url, tx.clone(), model.filename.to_string());
     }

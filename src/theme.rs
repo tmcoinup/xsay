@@ -1,6 +1,12 @@
 //! Design tokens extracted from the Figma Make reference (bundle hash
 //! `965fafa0c4522141713b07c7f5f25d79349fedc9`). Keep this the single
 //! source of truth — do not hard-code colors/radii in rendering code.
+//!
+//! Some tokens (BG_DEEPEST, FONT_H1, radius_xs/xl, etc.) aren't wired up
+//! in the current UI but are preserved so rendering code can reach for
+//! them as the design evolves without rebuilding the design language.
+
+#![allow(dead_code)]
 
 use eframe::egui::{Color32, CornerRadius};
 

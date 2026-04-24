@@ -6,13 +6,14 @@
 //! broader — all backends here are invoked through the `transcribe()`
 //! entry point based on the backend id from config.
 //!
-//! | backend id  | model                   | strengths                       |
-//! |-------------|-------------------------|---------------------------------|
-//! | sensevoice  | SenseVoice Small (阿里) | 多语言高精度，5x 快于 Whisper    |
-//! | paraformer  | Paraformer-zh (达摩院)  | 中文强项，非自回归，低延迟      |
+//! | backend id       | model                      | strengths                    |
+//! |------------------|----------------------------|------------------------------|
+//! | sensevoice       | SenseVoice Small int8      | 多语言高精度，低内存，最快   |
+//! | sensevoice-fp32  | SenseVoice Small float32   | 多语言高精度，量化损失更少   |
+//! | paraformer       | Paraformer-zh (达摩院)     | 中文强项，非自回归，低延迟   |
 //!
-//! All models live under ~/.cache/xsay/models/<backend>/ with the same
-//! two-file layout: model.int8.onnx + tokens.txt.
+//! All models live under ~/.cache/xsay/models/<backend>/ with an ONNX
+//! model file + tokens.txt.
 //!
 //! Feature-gated behind `sensevoice` (historical name) so the default
 //! build stays whisper-only and doesn't pull the ~50MB sherpa-onnx lib.
@@ -30,7 +31,7 @@ use std::sync::LazyLock;
 // model load that we don't want to pay every time. Mutex because both
 // SenseVoiceRecognizer and ParaformerRecognizer hold raw C pointers and
 // aren't Send on their own.
-static SENSEVOICE: LazyLock<Mutex<Option<SenseVoiceRecognizer>>> =
+static SENSEVOICE: LazyLock<Mutex<Option<(String, SenseVoiceRecognizer)>>> =
     LazyLock::new(|| Mutex::new(None));
 static PARAFORMER: LazyLock<Mutex<Option<ParaformerRecognizer>>> =
     LazyLock::new(|| Mutex::new(None));
@@ -46,20 +47,36 @@ pub fn sensevoice_dir() -> PathBuf {
     models_root().join("sensevoice")
 }
 
+fn sensevoice_variant(backend: &str) -> Option<(&'static str, &'static str)> {
+    match backend {
+        "sensevoice" => Some(("sensevoice", "model.int8.onnx")),
+        "sensevoice-fp32" => Some(("sensevoice-fp32", "model.onnx")),
+        _ => None,
+    }
+}
+
+fn sensevoice_dir_for(backend: &str) -> Option<PathBuf> {
+    let (dir, _) = sensevoice_variant(backend)?;
+    Some(models_root().join(dir))
+}
+
 pub fn paraformer_dir() -> PathBuf {
     models_root().join("paraformer")
 }
 
-/// Both installed models share the same file layout — model.int8.onnx +
-/// tokens.txt in a per-backend subdirectory. This lets `is_installed`
+/// Installed ONNX models share a model file + tokens.txt layout in a
+/// per-backend subdirectory. This lets `is_installed`
 /// stay a cheap two-stat check without touching the heavy ONNX session.
 pub fn is_installed(backend: &str) -> bool {
-    let d = match backend {
-        "sensevoice" => sensevoice_dir(),
-        "paraformer" => paraformer_dir(),
+    let (d, model_file) = match backend {
+        b if sensevoice_variant(b).is_some() => {
+            let (_, model_file) = sensevoice_variant(b).unwrap();
+            (sensevoice_dir_for(b).unwrap(), model_file)
+        }
+        "paraformer" => (paraformer_dir(), "model.int8.onnx"),
         _ => return false,
     };
-    d.join("model.int8.onnx").is_file() && d.join("tokens.txt").is_file()
+    d.join(model_file).is_file() && d.join("tokens.txt").is_file()
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -94,7 +111,7 @@ pub fn transcribe(backend: &str, samples: &[f32], opts: &OnnxOptions) -> Option<
         return Some(String::new());
     }
     match backend {
-        "sensevoice" => transcribe_sensevoice(samples, opts),
+        b if sensevoice_variant(b).is_some() => transcribe_sensevoice(b, samples, opts),
         "paraformer" => transcribe_paraformer(samples, opts),
         other => {
             log::warn!("unknown ONNX backend {:?}", other);
@@ -103,24 +120,27 @@ pub fn transcribe(backend: &str, samples: &[f32], opts: &OnnxOptions) -> Option<
     }
 }
 
-fn transcribe_sensevoice(samples: &[f32], opts: &OnnxOptions) -> Option<String> {
-    if !is_installed("sensevoice") {
-        log::warn!(
-            "SenseVoice model not found at {}",
-            sensevoice_dir().display()
-        );
+fn transcribe_sensevoice(backend: &str, samples: &[f32], opts: &OnnxOptions) -> Option<String> {
+    if !is_installed(backend) {
+        let path = sensevoice_dir_for(backend).unwrap_or_else(sensevoice_dir);
+        log::warn!("SenseVoice model not found at {}", path.display());
         return None;
     }
     let mut guard = SENSEVOICE.lock();
-    if guard.is_none() {
-        match build_sensevoice(opts) {
+    let needs_reload = guard
+        .as_ref()
+        .map(|(loaded_backend, _)| loaded_backend != backend)
+        .unwrap_or(true);
+    if needs_reload {
+        match build_sensevoice(backend, opts) {
             Ok(r) => {
                 log::info!(
-                    "SenseVoice recognizer ready (provider={}, threads={})",
+                    "SenseVoice recognizer ready (backend={}, provider={}, threads={})",
+                    backend,
                     opts.provider,
                     opts.num_threads
                 );
-                *guard = Some(r);
+                *guard = Some((backend.to_string(), r));
             }
             Err(e) => {
                 log::error!("SenseVoice init failed: {}", e);
@@ -128,7 +148,7 @@ fn transcribe_sensevoice(samples: &[f32], opts: &OnnxOptions) -> Option<String> 
             }
         }
     }
-    let recognizer = guard.as_mut().expect("just inserted");
+    let (_, recognizer) = guard.as_mut().expect("just inserted");
     let result = recognizer.transcribe(16000, samples);
     Some(result.text)
 }
@@ -163,10 +183,12 @@ fn transcribe_paraformer(samples: &[f32], opts: &OnnxOptions) -> Option<String> 
     Some(result.text)
 }
 
-fn build_sensevoice(opts: &OnnxOptions) -> Result<SenseVoiceRecognizer, String> {
-    let d = sensevoice_dir();
+fn build_sensevoice(backend: &str, opts: &OnnxOptions) -> Result<SenseVoiceRecognizer, String> {
+    let d = sensevoice_dir_for(backend).ok_or_else(|| format!("unknown backend {}", backend))?;
+    let (_, model_file) =
+        sensevoice_variant(backend).ok_or_else(|| format!("unknown backend {}", backend))?;
     let config = SenseVoiceConfig {
-        model: path_str(&d.join("model.int8.onnx")),
+        model: path_str(&d.join(model_file)),
         tokens: path_str(&d.join("tokens.txt")),
         language: opts.language.clone(),
         use_itn: opts.use_itn,

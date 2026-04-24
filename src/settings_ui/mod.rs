@@ -40,6 +40,8 @@ pub struct PendingSherpaExtract {
     pub archive_path: PathBuf,
     /// Absolute path to the subdirectory the model files should end up in.
     pub extract_to: PathBuf,
+    /// ONNX file to copy from the archive, e.g. model.int8.onnx or model.onnx.
+    pub model_file: String,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq)]
@@ -186,6 +188,13 @@ impl SettingsState {
 
 /// Entry point called each frame by the settings viewport in `overlay.rs`.
 /// Returns `true` when the user clicked the custom close button.
+///
+/// `Panel::show(ctx, ...)` and `CentralPanel::show(ctx, ...)` below trip
+/// a deprecation warning in egui 0.34 that recommends `show_inside(&mut
+/// Ui)`. That recommendation applies when you're rendering inside an
+/// existing Ui. Here we get a fresh Context from the nested-viewport
+/// callback — there's no enclosing Ui, so the Context form is correct.
+#[allow(deprecated)]
 pub fn render(ctx: &egui::Context, state: &mut SettingsState) -> bool {
     // Settings runs in its own viewport, which has its own Context/fonts.
     // Install CJK font once so Chinese labels don't render as tofu.

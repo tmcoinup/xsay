@@ -160,6 +160,16 @@ pub fn run_audio_thread(
                         peak_rms,
                         rms_hint(peak_rms),
                     );
+                    // Desktop notification for mic-unplugged / wrong-device
+                    // scenarios. Recordings shorter than 0.4s are usually
+                    // accidental key taps — don't nag in that case.
+                    // Threshold 0.003 is below the silence threshold and
+                    // well below normal speech (~0.03–0.1); hitting it
+                    // generally means the device returned zeroes.
+                    let duration_s = accumulator.len() as f32 / 16_000.0;
+                    if duration_s >= 0.4 && peak_rms < 0.003 {
+                        notify_mic_silent();
+                    }
                     let samples = std::mem::take(&mut accumulator);
                     let _ = chunk_tx.send(AudioChunk {
                         samples,
@@ -299,4 +309,42 @@ fn rms_hint(peak: f32) -> &'static str {
     } else {
         "正常"
     }
+}
+
+/// Desktop notification surfaced when a recording returns near-zero
+/// audio energy over a non-trivial duration. The usual cause is the
+/// system default input device being a monitor / muted mic / unplugged
+/// headset — situations the user can only diagnose visually (or via
+/// log inspection) unless xsay tells them.
+///
+/// Throttled by a static AtomicU64 timestamp so a long stretch of
+/// silent attempts doesn't spam a notification per hotkey press.
+fn notify_mic_silent() {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static LAST_NOTIFY_EPOCH: AtomicU64 = AtomicU64::new(0);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let last = LAST_NOTIFY_EPOCH.load(Ordering::Relaxed);
+    // 60s cooldown — plenty of time for the user to react, not so long
+    // that a plug-in/plug-out cycle gets silenced.
+    if now - last < 60 {
+        return;
+    }
+    LAST_NOTIFY_EPOCH.store(now, Ordering::Relaxed);
+
+    let _ = std::process::Command::new("notify-send")
+        .args([
+            "-a",
+            "xsay",
+            "-u",
+            "normal",
+            "-t",
+            "6000",
+            "xsay: 麦克风无信号",
+            "录音时没有采集到声音。请检查：系统声音设置里的输入设备是不是你想用的麦克风，\
+             权限是否允许，物理麦克是不是静音了。",
+        ])
+        .status();
 }

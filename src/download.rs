@@ -150,7 +150,18 @@ fn run_download(
             Err(TryRecvError::Disconnected) => {}
         }
 
-        let n = reader.read(&mut buf).map_err(|e| e.to_string())?;
+        let n = match reader.read(&mut buf) {
+            Ok(n) => n,
+            Err(e) if is_tls_close_notify_error(&e) && total > 0 && cur >= total => {
+                log::warn!(
+                    "Download stream ended without TLS close_notify after full content ({}/{} bytes); treating as complete",
+                    cur,
+                    total
+                );
+                break;
+            }
+            Err(e) => return Err(e.to_string()),
+        };
         if n == 0 {
             break;
         }
@@ -161,8 +172,16 @@ fn run_download(
     }
 
     drop(file);
+    if total > 0 && cur < total {
+        return Err(format!("download incomplete: {}/{} bytes", cur, total));
+    }
     std::fs::rename(&pp, dest).map_err(|e| e.to_string())?;
     Ok(())
+}
+
+fn is_tls_close_notify_error(e: &std::io::Error) -> bool {
+    let s = e.to_string();
+    s.contains("close_notify") || s.contains("CloseNotify")
 }
 
 /// Spawn a thread that does a HEAD request and sends back (filename, Option<size_bytes>).

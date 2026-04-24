@@ -80,7 +80,13 @@ winit = "0.30"
 # Feature-gated so default build stays whisper-only and avoids pulling
 # the ~50MB sherpa-onnx shared library when unused.
 [features]
-default = []
+# sensevoice is in the default set because SenseVoice is the fast /
+# high-accuracy Chinese path most users end up wanting — making it
+# opt-in meant `cargo run` silently fell back to Whisper every new
+# clone, and people had to learn the `--features sensevoice` incantation.
+# Users who want the absolute-minimum whisper-only build can still
+# `cargo build --no-default-features [--features vulkan]`.
+default = ["sensevoice"]
 cuda = ["whisper-rs/cuda"]
 vulkan = ["whisper-rs/vulkan"]
 metal = ["whisper-rs/metal"]
