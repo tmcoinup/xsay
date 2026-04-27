@@ -46,12 +46,18 @@ Out of the box via `cargo-deb`:
 ```bash
 cargo install cargo-deb
 cargo deb
-sudo dpkg -i target/debian/xsay_0.1.0_amd64.deb
+# Install with apt so the declared runtime deps (libxdo3 etc.) are
+# auto-fetched from the distro repos. `dpkg -i` does NOT resolve deps
+# and will leave the package half-configured if libxdo3 is missing.
+sudo apt install ./target/debian/xsay_0.1.3-1_amd64.deb
 ```
 
 The generated .deb already declares runtime deps (libx11-6, libxtst6,
 libasound2, libgtk-3-0, libayatana-appindicator3-1, libxdo3) from
-`[package.metadata.deb]` in `Cargo.toml`.
+`[package.metadata.deb]` in `Cargo.toml`. If a user ran `dpkg -i` and
+hit `dependency problems prevent configuration of xsay`, `sudo apt -f
+install` will pull the missing packages and finish configuring xsay
+without needing to re-download the .deb.
 
 For a Launchpad PPA workflow:
 

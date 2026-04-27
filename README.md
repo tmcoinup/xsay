@@ -49,6 +49,20 @@ chmod +x xsay-*
 
 Linux 运行时依赖（`apt install`）：`libx11-6 libxtst6 libasound2 libgtk-3-0 libayatana-appindicator3-1 libxdo3`
 
+### 或：用 .deb 包安装（自动拉依赖）
+
+下载 `xsay-linux-x64-<version>-1.deb` 后，**用 apt 装**（不要直接 `dpkg -i`，dpkg 不会自动下载依赖）：
+
+```bash
+sudo apt install ./xsay-linux-x64-0.1.3-1.deb
+```
+
+如果你已经跑了 `sudo dpkg -i ...` 并看到 `dependency problems`（典型的是缺 `libxdo3`），用以下命令补齐：
+
+```bash
+sudo apt -f install        # 自动下载缺失依赖并完成 xsay 的配置
+```
+
 ### 或：从源码构建
 
 见下面 [构建 · Build from source](#构建--build-from-source)。
@@ -234,7 +248,8 @@ cargo build --release --no-default-features
 ```bash
 cargo install cargo-deb
 cargo deb
-sudo dpkg -i target/debian/xsay_0.1.0_amd64.deb
+# 用 apt 装（自动解析 libxdo3 等运行时依赖）
+sudo apt install ./target/debian/xsay_0.1.3-1_amd64.deb
 ```
 
 ## 打 Snap（可发布到 Snap Store / Ubuntu 软件中心）
