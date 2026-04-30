@@ -25,9 +25,14 @@ the result into the focused window. Supports Chinese + English, Wayland \
 and X11 on Linux."""
 section = "utils"
 priority = "optional"
-depends = "libc6, libx11-6, libxtst6, libasound2, libgtk-3-0, libayatana-appindicator3-1 | libappindicator3-1, libxdo3"
+depends = "libc6"
 assets = [
-    ["target/release/xsay", "usr/bin/", "755"],
+    # Install the real binary next to vendored runtime libs. The launcher below
+    # sets LD_LIBRARY_PATH so `dpkg -i` installs do not need apt to resolve the
+    # desktop/audio/X11/Sherpa shared-library packages first.
+    ["target/release/xsay", "usr/lib/xsay/xsay", "755"],
+    ["target/debian-vendor-libs/*", "usr/lib/xsay/", "644"],
+    ["packaging/deb/xsay", "usr/bin/xsay", "755"],
     ["README.md", "usr/share/doc/xsay/README", "644"],
     # Desktop launcher (Ubuntu Software / Activities picks it up).
     ["share/applications/xsay.desktop", "usr/share/applications/xsay.desktop", "644"],

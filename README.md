@@ -47,21 +47,25 @@ chmod +x xsay-*
 | xsay-linux-x64-vulkan | Linux x64 | NVIDIA / AMD / Intel GPU | 有显卡、想跑大模型 |
 | xsay-macos-arm64-metal | macOS Apple Silicon | Apple GPU | M 系列 Mac |
 
-Linux 运行时依赖（`apt install`）：`libx11-6 libxtst6 libasound2 libgtk-3-0 libayatana-appindicator3-1 libxdo3`
+Linux 裸二进制运行时依赖（`apt install`）：`libc6 libstdc++6 libgcc-s1 libx11-6 libxtst6 libasound2 libgtk-3-0 libayatana-appindicator3-1 libxdo3`
 
-### 或：用 .deb 包安装（自动拉依赖）
+### 或：用 .deb 包安装（运行库已随包携带）
 
-下载 `xsay-linux-x64-<version>-1.deb` 后，**用 apt 装**（不要直接 `dpkg -i`，dpkg 不会自动下载依赖）：
+下载 `xsay-linux-x64-<version>-1.deb` 后，可直接用 `dpkg` 离线安装：
+
+```bash
+sudo dpkg -i ./xsay-linux-x64-0.1.3-1.deb
+```
+
+也可以继续用 `apt` 安装本地包：
 
 ```bash
 sudo apt install ./xsay-linux-x64-0.1.3-1.deb
 ```
 
-如果你已经跑了 `sudo dpkg -i ...` 并看到 `dependency problems`（典型的是缺 `libxdo3`），用以下命令补齐：
-
-```bash
-sudo apt -f install        # 自动下载缺失依赖并完成 xsay 的配置
-```
+`.deb` 包会把 xsay 的 GTK/X11/audio/xdo/Sherpa/ONNX Runtime 运行库一起
+安装到 `/usr/lib/xsay/`，因此也可以用 `sudo dpkg -i ./xsay_*.deb` 离线安装。
+不要只拷贝 `/usr/bin/xsay` 这个启动入口。
 
 ### 或：从源码构建
 
@@ -247,9 +251,11 @@ cargo build --release --no-default-features
 
 ```bash
 cargo install cargo-deb
-cargo deb
-# 用 apt 装（自动解析 libxdo3 等运行时依赖）
-sudo apt install ./target/debian/xsay_0.1.3-1_amd64.deb
+cargo build --release
+./packaging/deb/vendor-runtime-libs.sh
+cargo deb --no-build
+# 可离线安装；运行库已随包放到 /usr/lib/xsay/
+sudo dpkg -i ./target/debian/xsay_0.1.3-1_amd64.deb
 ```
 
 ## 打 Snap（可发布到 Snap Store / Ubuntu 软件中心）

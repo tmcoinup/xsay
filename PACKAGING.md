@@ -41,23 +41,21 @@ Output lands in `dist/`.
 
 ## 2. Debian package (.deb)
 
-Out of the box via `cargo-deb`:
+Build a self-contained local package via `cargo-deb`:
 
 ```bash
 cargo install cargo-deb
-cargo deb
-# Install with apt so the declared runtime deps (libxdo3 etc.) are
-# auto-fetched from the distro repos. `dpkg -i` does NOT resolve deps
-# and will leave the package half-configured if libxdo3 is missing.
-sudo apt install ./target/debian/xsay_0.1.3-1_amd64.deb
+cargo build --release
+./packaging/deb/vendor-runtime-libs.sh
+cargo deb --no-build
+sudo dpkg -i ./target/debian/xsay_0.1.3-1_amd64.deb
 ```
 
-The generated .deb already declares runtime deps (libx11-6, libxtst6,
-libasound2, libgtk-3-0, libayatana-appindicator3-1, libxdo3) from
-`[package.metadata.deb]` in `Cargo.toml`. If a user ran `dpkg -i` and
-hit `dependency problems prevent configuration of xsay`, `sudo apt -f
-install` will pull the missing packages and finish configuring xsay
-without needing to re-download the .deb.
+The generated .deb keeps only `libc6` in Debian `Depends` and bundles the
+GTK/X11/audio/xdo/Sherpa/ONNX runtime libraries under `/usr/lib/xsay/`.
+The `/usr/bin/xsay` launcher sets `LD_LIBRARY_PATH` to that private
+directory before starting the real binary, so `dpkg -i` does not need apt
+to resolve those packages first.
 
 For a Launchpad PPA workflow:
 
