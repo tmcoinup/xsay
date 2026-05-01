@@ -133,7 +133,7 @@ settings_ui 各子模块 ─► config / history / autostart / download / audio
 
 - **eframe 必须主线程**：macOS/Cocoa 要求 UI 在主线程。所有业务逻辑都必须在其他线程。
 - **WhisperContext 非 Send**：whisper-rs 的上下文不能跨线程移动，所以在 transcribe 线程内部构造，通过 channel 跨线程。
-- **hotkey 后端二选一**：Wayland 下 rdev 基本无效（只能拿到 XWayland 应用的键），要走 evdev 读 `/dev/input/*`；X11 下两者都行，默认 rdev 简单。
+- **hotkey 后端二选一**：默认启用内置监听，Wayland 下 rdev 基本无效（只能拿到 XWayland 应用的键），要走 evdev 读 `/dev/input/*`；X11 下可用 rdev。用户也可以关闭内置监听，改用系统快捷键调用 `xsay toggle`。
 - **tray 单独 GTK 线程**：`tray-icon` 在 Linux 走 AppIndicator（DBus），需要活跃的 GTK 主循环；eframe 用 winit 不含 GTK，所以单独起一条线程 `gtk::init()` + `gtk::main()`。
 - **coordinator 单点路由**：所有状态转换只发生在这一个线程里，避免竞态。UI 和 worker 线程只读/写 shared config，永远不直接改 `AppState`（Escape 的快捷路径除外，但它只写 Idle，不会与 coordinator 起冲突）。
 

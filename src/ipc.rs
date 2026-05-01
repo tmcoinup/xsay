@@ -47,6 +47,16 @@ pub fn lock_path() -> PathBuf {
     dir.join("xsay.lock")
 }
 
+/// Remove per-session IPC files after a normal shutdown.
+///
+/// The advisory flock itself is released by the OS when the process exits,
+/// but leaving the socket file around makes the next launch attempt an
+/// unnecessary stale IPC connection before it can become the daemon.
+pub fn cleanup_runtime_files() {
+    let _ = std::fs::remove_file(socket_path());
+    let _ = std::fs::remove_file(lock_path());
+}
+
 /// Try to become the single long-lived xsay daemon for this user.
 ///
 /// The lock is advisory and tied to the process file descriptor, so it is

@@ -28,6 +28,7 @@ pub struct XsayOverlay {
     shared_position: Arc<Mutex<String>>,
     last_positioned_size: egui::Vec2,
     last_positioned_corner: String,
+    quit_requested: bool,
 }
 
 impl XsayOverlay {
@@ -67,6 +68,7 @@ impl XsayOverlay {
             shared_position,
             last_positioned_size: egui::vec2(0.0, 0.0),
             last_positioned_corner: String::new(),
+            quit_requested: false,
         }
     }
 }
@@ -104,12 +106,20 @@ impl eframe::App for XsayOverlay {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
                     ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
                 }
+                TrayAction::Quit => {
+                    self.quit_requested = true;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
             }
         }
 
         if ctx.input(|i| i.viewport().close_requested()) {
-            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            if self.quit_requested {
+                return;
+            } else {
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            }
         }
 
         if settings_ui::render(ctx, &mut self.settings) {
@@ -137,7 +147,7 @@ impl XsayOverlay {
     ) {
         let is_idle = matches!(state, AppState::Idle);
         let overlay_size = if is_idle {
-            egui::vec2(96.0, 34.0)
+            egui::vec2(44.0, 44.0)
         } else {
             egui::vec2(120.0, 120.0)
         };
@@ -231,45 +241,74 @@ impl XsayOverlay {
 }
 
 fn render_idle_badge(ctx: &egui::Context) {
-    let bg = egui::Color32::from_rgba_premultiplied(0x14, 0x14, 0x1A, 205);
-    let frame = egui::Frame::new()
-        .fill(bg)
-        .corner_radius(crate::theme::radius_lg());
+    let frame = egui::Frame::new().fill(egui::Color32::TRANSPARENT);
 
     #[allow(deprecated)]
     egui::CentralPanel::default().frame(frame).show(ctx, |ui| {
-        let rect = ui.max_rect().shrink(1.0);
+        let rect = ui.max_rect().shrink(3.0);
         let response = ui.interact(rect, egui::Id::new("xsay_idle_badge"), egui::Sense::click());
-        let stroke = if response.hovered() {
-            egui::Stroke::new(1.0, crate::theme::ACCENT)
-        } else {
-            egui::Stroke::new(
-                1.0,
-                egui::Color32::from_rgba_premultiplied(255, 255, 255, 24),
-            )
-        };
-        ui.painter().rect_stroke(
-            rect,
-            crate::theme::radius_lg(),
-            stroke,
-            egui::StrokeKind::Inside,
-        );
+        paint_idle_logo(ui.painter(), rect);
 
-        let dot_center = egui::pos2(rect.min.x + 17.0, rect.center().y);
-        ui.painter()
-            .circle_filled(dot_center, 5.0, crate::theme::ACCENT);
-        ui.painter().text(
-            egui::pos2(dot_center.x + 13.0, rect.center().y),
-            egui::Align2::LEFT_CENTER,
-            "xsay",
-            egui::FontId::proportional(crate::theme::FONT_SM),
-            crate::theme::TEXT_PRIMARY,
-        );
+        if response.hovered() {
+            ui.painter().rect_stroke(
+                rect.expand(1.0),
+                crate::theme::radius_lg(),
+                egui::Stroke::new(1.0, crate::theme::ACCENT),
+                egui::StrokeKind::Inside,
+            );
+        }
 
         if response.clicked() {
             tray::request_show_settings();
         }
     });
+}
+
+fn paint_idle_logo(painter: &egui::Painter, rect: egui::Rect) {
+    let r = rect.width().min(rect.height());
+    let c = rect.center();
+    let blue = egui::Color32::from_rgb(0x3B, 0x82, 0xF6);
+    painter.circle_filled(c, r * 0.43, blue);
+    painter.circle_stroke(
+        c,
+        r * 0.43,
+        egui::Stroke::new(
+            1.0,
+            egui::Color32::from_rgba_premultiplied(255, 255, 255, 90),
+        ),
+    );
+
+    let mic_rect = egui::Rect::from_center_size(
+        c + egui::vec2(0.0, -r * 0.06),
+        egui::vec2(r * 0.18, r * 0.3),
+    );
+    painter.rect_filled(
+        mic_rect,
+        egui::CornerRadius::same((r * 0.09) as u8),
+        egui::Color32::WHITE,
+    );
+
+    let white = egui::Stroke::new((r * 0.055).max(1.8), egui::Color32::WHITE);
+    let y = c.y + r * 0.08;
+    painter.line_segment(
+        [egui::pos2(c.x - r * 0.17, y), egui::pos2(c.x + r * 0.17, y)],
+        white,
+    );
+    painter.line_segment(
+        [
+            egui::pos2(c.x - r * 0.17, y),
+            egui::pos2(c.x - r * 0.17, y - r * 0.08),
+        ],
+        white,
+    );
+    painter.line_segment(
+        [
+            egui::pos2(c.x + r * 0.17, y),
+            egui::pos2(c.x + r * 0.17, y - r * 0.08),
+        ],
+        white,
+    );
+    painter.line_segment([egui::pos2(c.x, y), egui::pos2(c.x, c.y + r * 0.25)], white);
 }
 
 fn render_mic_glyph(

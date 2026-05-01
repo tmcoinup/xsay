@@ -21,10 +21,10 @@
 
 - **完全离线** — 所有模型本地推理，不联网、不上传任何音频
 - **中文优先 ASR** — 只保留 SenseVoice Small / SenseVoice Small FP32 / Paraformer-zh 三个 sherpa-onnx 模型
-- **三种触发方式** — 按住说话（hold）/ 点按切换（toggle）/ 绑 GNOME 系统快捷键调用 `xsay toggle`
+- **三种触发方式** — 默认 Super+Z 按住说话，也可切点按切换或绑定 GNOME/KDE 系统快捷键调用 `xsay toggle`
 - **中文/粤语/中英夹杂** — 默认固定中文，必要时可切自动检测或粤语
 - **幻觉过滤** — 识别静音直接返回空白；过滤 Whisper 训练数据里的"謝謝大家收看 / 字幕志愿者 XXX"和 SenseVoice 的"Okay./Yes./嗯。"填充词
-- **Wayland 友好** — evdev 直接读键盘、arboard 走原生剪贴板协议、uinput 级合成 Ctrl+V 自动粘贴，无需 ydotool daemon
+- **Wayland 友好** — evdev 可直接读键盘，系统快捷键 IPC 更稳；arboard 走原生剪贴板协议，uinput 自动粘贴按需启用
 - **GPU 加速可选** — `--features cuda | vulkan | metal | hipblas`，按硬件选
 - **右上角常驻角标 + 原生托盘** — 桌面右上角小图标常驻，识别时放大为 120×120 动画话筒
 - **历史记录** — 所有识别结果保存在 `~/.cache/xsay/history.jsonl`
@@ -82,7 +82,7 @@ AppIndicator 推荐扩展。打包前运行
 
 2. **第一次运行自动打开设置窗口（或从托盘打开）**
    - **模型** 标签页：点击 `SenseVoice Small` 右边 **安装**，等下载完（约 230 MB）
-   - **快捷键** 标签页：默认 `Super+Z` 按住说话；也可点 **捕捉按键** 改成别的组合
+   - **快捷键** 标签页：默认 `Super+Z` 按住说话；Wayland 下也可复制“外部触发”命令到系统快捷键
    - **常规** 标签页：选择识别语言、粘贴快捷键等
 
 3. **说话**
@@ -155,6 +155,7 @@ sudo udevadm control --reload-rules && sudo modprobe uinput
 key = "z"                     # 按键名
 modifiers = ["super"]         # 修饰键，例如 ["ctrl", "shift"]
 mode = "hold"                 # 默认按住说话，松开后识别并输出
+internal_listener = true      # 默认启用内置键盘监听；也可关闭后用系统快捷键调用 xsay toggle
 
 [audio]
 silence_threshold = 0.01      # 静音检测阈值
@@ -172,7 +173,7 @@ n_threads = 4                 # CPU 推理线程数
 backend = "sensevoice"        # sensevoice / sensevoice-fp32 / paraformer
 
 [overlay]
-position = "top-right"        # top-left / top-center / top-right /
+position = "bottom-center"    # top-left / top-center / top-right /
                               # bottom-left / bottom-center / bottom-right / center
 opacity = 0.9
 
@@ -278,7 +279,7 @@ snapcraft upload --release=edge ./xsay_*_amd64.snap
 
 | 症状 | 原因 / 解决 |
 |---|---|
-| 按快捷键没反应 | Wayland 下 rdev 看不到原生窗口；`sudo usermod -aG input $USER` 让 xsay 用 evdev |
+| 按快捷键没反应 | Wayland 下 rdev 看不到原生窗口；`sudo usermod -aG input $USER` 让 xsay 用 evdev，或在系统快捷键里绑定 `xsay toggle` |
 | 识别很慢 | 优先使用 SenseVoice Small；Paraformer 冷启动较慢但预热后延迟低 |
 | 识别出奇怪的话（"謝謝大家收看"等）| 麦克风无信号时 Whisper 会瞎编；xsay 有 RMS 门和黑名单，但也可能漏。看日志 `grep "peak RMS" /tmp/xsay.log` 确认麦克是否在工作 |
 | 没自动粘贴 | 完成 [Wayland 自动粘贴](#wayland-自动粘贴) 的 udev 设置 + 注销重登 |

@@ -24,9 +24,9 @@ pub struct HotkeyConfig {
     pub mode: String,
     /// Whether xsay starts its own passive rdev/evdev keyboard listener.
     ///
-    /// This keeps the historical "press the configured hotkey directly"
-    /// behavior working. Users on restrictive Wayland setups can disable it
-    /// and bind a desktop shortcut to `xsay toggle` instead.
+    /// Enabled by default for the normal "hold Super+Z to speak" flow. Users
+    /// on restrictive Wayland setups can disable it and bind a desktop
+    /// shortcut to `xsay toggle` instead.
     pub internal_listener: bool,
 }
 
@@ -144,10 +144,9 @@ impl Default for TranscriptionConfig {
 impl Default for OverlayConfig {
     fn default() -> Self {
         Self {
-            // Chinese-service default: keep the resident xsay badge in the
-            // top-right so it is visible even when the native tray is hidden
-            // by GNOME/AppIndicator availability.
-            position: "top-right".to_string(),
+            // Keep the resident icon clear of top bars and close to where
+            // dictation feedback is normally expected.
+            position: "bottom-center".to_string(),
             opacity: 0.9,
         }
     }

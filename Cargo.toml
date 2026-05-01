@@ -1,6 +1,6 @@
 [package]
 name = "xsay"
-version = "0.1.14"
+version = "0.1.18"
 edition = "2024"
 description = "Chinese-first offline AI voice input tool with SenseVoice/Paraformer"
 license = "MIT"

@@ -10,6 +10,7 @@ const ID_QUIT: &str = "xsay.quit";
 
 pub enum TrayAction {
     ShowSettings,
+    Quit,
 }
 
 /// Holds the tray so it stays alive; drop this to remove the icon.
@@ -35,7 +36,7 @@ fn start_event_dispatcher() {
                     let _ = tx.send(TrayAction::ShowSettings);
                 } else if id == ID_QUIT {
                     log::info!("Tray quit requested");
-                    std::process::exit(0);
+                    let _ = tx.send(TrayAction::Quit);
                 }
             }
         });

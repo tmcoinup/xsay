@@ -21,14 +21,6 @@ fn is_wayland() -> bool {
             .unwrap_or(false)
 }
 
-#[cfg(target_os = "linux")]
-pub(crate) fn warmup_synthetic_keyboard() {
-    uinput_paste::warmup();
-}
-
-#[cfg(not(target_os = "linux"))]
-pub(crate) fn warmup_synthetic_keyboard() {}
-
 pub fn run_inject_thread(
     inject_rx: Receiver<InjectCmd>,
     done_tx: Sender<()>,
@@ -221,13 +213,6 @@ pub(crate) mod uinput_paste {
         std::thread::sleep(std::time::Duration::from_millis(200));
         log::info!("uinput virtual keyboard created for auto-paste");
         Ok(dev)
-    }
-
-    pub fn warmup() {
-        let mut guard = DEVICE.lock();
-        if guard.is_none() {
-            *guard = create().ok();
-        }
     }
 
     /// Emit a paste key sequence. `shortcut` picks the modifier set:

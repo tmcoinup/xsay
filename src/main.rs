@@ -190,10 +190,6 @@ fn main() -> anyhow::Result<()> {
         std::thread::spawn(move || inject::run_inject_thread(inject_rx, inject_done_tx, inj));
     }
 
-    // Create the Linux uinput keyboard early so the first transcription does
-    // not race virtual-device enumeration when it tries to paste.
-    inject::warmup_synthetic_keyboard();
-
     // Coordinator on a dedicated thread (main thread is reserved for eframe/GUI)
     {
         let coord_state = Arc::clone(&shared_state);
@@ -238,7 +234,7 @@ fn main() -> anyhow::Result<()> {
     // implicated in desktop hangs on GNOME.
     let native_options = overlay::build_native_options(&cfg.overlay, !start_hidden);
 
-    eframe::run_native(
+    let gui_result = eframe::run_native(
         "xsay",
         native_options,
         Box::new(move |cc| {
@@ -256,8 +252,12 @@ fn main() -> anyhow::Result<()> {
                 model_reload_tx,
             )))
         }),
-    )
-    .map_err(|e| anyhow::anyhow!("eframe error: {:?}", e))?;
+    );
+
+    #[cfg(unix)]
+    ipc::cleanup_runtime_files();
+
+    gui_result.map_err(|e| anyhow::anyhow!("eframe error: {:?}", e))?;
 
     Ok(())
 }
