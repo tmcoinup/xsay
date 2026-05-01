@@ -18,6 +18,7 @@
 //!   - `release` — unconditionally send HotkeyReleased (stop & transcribe).
 //!   - `cancel`  — send EscapePressed (abort any in-flight session).
 //!   - `show`    — focus the already-running settings window.
+//!   - `quit`    — graceful shutdown of the daemon.
 //!   - `ping`    — no-op health check used by background autostart.
 
 use crate::hotkey::AppEvent;
@@ -189,6 +190,9 @@ fn dispatch(cmd: &str, event_tx: &Sender<AppEvent>, shared_state: &SharedState) 
         }
         "show" => {
             crate::tray::request_show_settings();
+        }
+        "quit" => {
+            crate::tray::request_quit();
         }
         "ping" => {}
         other => {

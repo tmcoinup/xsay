@@ -73,7 +73,7 @@ fn main() -> anyhow::Result<()> {
         // `xsay toggle` in GNOME Custom Shortcuts). Unix-only — Windows
         // doesn't have std::os::unix::net and wouldn't compile the module.
         #[cfg(unix)]
-        "toggle" | "press" | "release" | "cancel" | "show" | "ping" => {
+        "toggle" | "press" | "release" | "cancel" | "show" | "quit" | "ping" => {
             if let Err(e) = ipc::send_command(cmd) {
                 eprintln!("{}", e);
                 std::process::exit(1);

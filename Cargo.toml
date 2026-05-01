@@ -1,6 +1,6 @@
 [package]
 name = "xsay"
-version = "0.1.24"
+version = "0.1.25"
 edition = "2024"
 description = "Chinese-first offline AI voice input tool with SenseVoice/Paraformer"
 license = "MIT"
@@ -31,11 +31,7 @@ priority = "optional"
 # offline installs, run `packaging/deb/vendor-runtime-libs.sh` before
 # `cargo deb --no-build`; the launcher below then loads bundled copies from
 # /usr/lib/xsay.
-depends = "libc6, libasound2, libgtk-3-0, libayatana-appindicator3-1 | libappindicator3-1, libx11-6, libxi6, libxtst6, libxdo3"
-# GNOME hides AppIndicator/status icons unless this shell extension is present
-# and enabled. Keep it as a recommendation because KDE/Xfce/etc. provide their
-# own tray surfaces.
-recommends = "gnome-shell-extension-appindicator"
+depends = "libc6, libasound2, libx11-6, libxi6, libxtst6, libxdo3"
 maintainer-scripts = "packaging/deb/maintainer-scripts"
 assets = [
     # Install the real binary next to vendored runtime libs. The launcher below
@@ -88,7 +84,6 @@ env_logger = "0.11"
 parking_lot = "0.12"
 crossbeam-channel = "0.5"
 ureq = { version = "2", features = ["native-tls"] }
-tray-icon = "0.14"
 libc = "0.2"
 
 # rdev is the global keyboard listener on macOS and Windows. On Linux its
@@ -100,12 +95,6 @@ rdev = "0.5"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 evdev = "0.13"
-gtk = "0.18"
-# Same winit version eframe 0.34 transitively pulls in. Needed so we can
-# force the GUI event loop onto X11 (XWayland) — GNOME/mutter ignores the
-# Wayland protocol extensions we rely on for positioning a transparent
-# always-on-top overlay, so `OuterPosition` lands in the wrong place.
-winit = "0.30"
 
 # Optional GPU acceleration. Default build = CPU only, works on any machine
 # without system dependencies beyond what's already required. Enthusiasts
