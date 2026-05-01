@@ -1,6 +1,6 @@
 [package]
 name = "xsay"
-version = "0.1.18"
+version = "0.1.23"
 edition = "2024"
 description = "Chinese-first offline AI voice input tool with SenseVoice/Paraformer"
 license = "MIT"
@@ -61,7 +61,19 @@ assets = [
 cpal = "0.15"
 whisper-rs = "0.14"
 rdev = "0.5"
-eframe = { version = "0.34.1", features = ["default_fonts"] }
+# Force the OpenGL (glow) backend instead of eframe 0.34's new wgpu default.
+# wgpu's Vulkan path on GNOME mutter does not advertise an alpha-supporting
+# CompositeAlphaMode for our transparent always-on-top overlay surface — the
+# floating mic indicator ends up rendered with an opaque clear color which
+# blocks whatever is behind it. glow uses GLX/EGL where the X11 32-bit
+# visual handles per-pixel alpha cleanly.
+eframe = { version = "0.34.1", default-features = false, features = [
+    "accesskit",
+    "default_fonts",
+    "glow",
+    "wayland",
+    "x11",
+] }
 egui = "0.34.1"
 enigo = "0.2"
 arboard = "3"

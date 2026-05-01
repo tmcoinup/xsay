@@ -40,7 +40,6 @@ fn main() -> anyhow::Result<()> {
 
     let args: Vec<String> = std::env::args().collect();
     let cmd = args.get(1).map(|s| s.as_str()).unwrap_or("");
-    let start_hidden = matches!(cmd, "--background" | "--daemon");
 
     match cmd {
         "--help" | "-h" => {
@@ -72,7 +71,7 @@ fn main() -> anyhow::Result<()> {
         // `xsay toggle` in GNOME Custom Shortcuts). Unix-only — Windows
         // doesn't have std::os::unix::net and wouldn't compile the module.
         #[cfg(unix)]
-        "toggle" | "cancel" | "show" | "ping" => {
+        "toggle" | "press" | "release" | "cancel" | "show" | "ping" => {
             if let Err(e) = ipc::send_command(cmd) {
                 eprintln!("{}", e);
                 std::process::exit(1);
@@ -85,15 +84,14 @@ fn main() -> anyhow::Result<()> {
 
     // Wayland + X11 backends are both handled below; evdev is preferred on Wayland.
 
+    // Second-launch behavior: ping the existing daemon so its overlay/tray
+    // stays alive. The settings window is no longer auto-shown — users open
+    // it explicitly via the overlay click or the tray "设置" menu. Keeping
+    // re-launch silent matches the autostart path and avoids surprising the
+    // user with a settings dialog when they didn't ask for one.
     #[cfg(unix)]
-    if ipc::socket_path().exists()
-        && ipc::send_command(if start_hidden { "ping" } else { "show" }).is_ok()
-    {
-        if start_hidden {
-            eprintln!("xsay 已在运行。");
-        } else {
-            eprintln!("xsay 已在运行，已唤醒现有窗口。");
-        }
+    if ipc::socket_path().exists() && ipc::send_command("ping").is_ok() {
+        eprintln!("xsay 已在运行。");
         return Ok(());
     }
 
@@ -101,13 +99,10 @@ fn main() -> anyhow::Result<()> {
     let _instance_guard = match ipc::acquire_instance_lock().map_err(anyhow::Error::msg)? {
         Some(guard) => guard,
         None => {
-            let cmd = if start_hidden { "ping" } else { "show" };
-            if let Err(e) = ipc::send_command(cmd) {
-                eprintln!("xsay 已在运行，但唤醒窗口失败：{}", e);
-            } else if start_hidden {
-                eprintln!("xsay 已在运行。");
+            if let Err(e) = ipc::send_command("ping") {
+                eprintln!("xsay 已在运行，但 IPC 通讯失败：{}", e);
             } else {
-                eprintln!("xsay 已在运行，已唤醒现有窗口。");
+                eprintln!("xsay 已在运行。");
             }
             return Ok(());
         }
@@ -229,10 +224,14 @@ fn main() -> anyhow::Result<()> {
         );
     }
 
-    // GUI on main thread. Use the platform default backend; the old XWayland
-    // forced path was only needed for the transparent floating overlay and was
-    // implicated in desktop hangs on GNOME.
-    let native_options = overlay::build_native_options(&cfg.overlay, !start_hidden);
+    // GUI on main thread. The floating overlay IS the eframe main viewport;
+    // settings is rendered as an immediate child viewport, spawned only when
+    // the user opens it (overlay click, tray menu, or `xsay show` IPC). The
+    // overlay must be the root because eframe skips `App::ui()` for hidden
+    // root viewports — making settings the root and starting it hidden would
+    // also kill the overlay it spawns, leaving the daemon visible only via
+    // the tray icon.
+    let native_options = overlay::build_native_options(&cfg.overlay);
 
     let gui_result = eframe::run_native(
         "xsay",
@@ -527,6 +526,11 @@ fn print_help() {
         println!(
             "  toggle             Toggle recording on the running daemon (for custom shortcuts)"
         );
+        println!(
+            "  press              Start recording (pair with `release` for hold-to-talk; \
+             requires a binder that fires on key-down + key-up — xbindkeys, evdev)"
+        );
+        println!("  release            Stop recording and transcribe (pair with `press`)");
         println!("  cancel             Abort an in-flight session on the running daemon");
         println!("  show               Show the running daemon's settings window");
     }

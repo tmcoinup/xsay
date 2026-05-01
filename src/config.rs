@@ -101,9 +101,13 @@ impl Default for Config {
 
 impl Default for HotkeyConfig {
     fn default() -> Self {
+        // F2 has the right ergonomics for hold-to-talk: it's a single key
+        // (no modifier chord to keep pressed), nearly every app ignores
+        // it so xsay can grab it without conflict, and it's reachable
+        // with one finger so push-to-talk feels natural.
         Self {
-            key: "z".to_string(),
-            modifiers: vec!["super".to_string()],
+            key: "F2".to_string(),
+            modifiers: vec![],
             mode: "hold".to_string(),
             internal_listener: true,
         }
@@ -243,10 +247,20 @@ impl Config {
             changed = true;
         }
         if self.hotkey.key.is_empty() {
-            self.hotkey.key = "z".to_string();
+            self.hotkey.key = "F2".to_string();
+            self.hotkey.modifiers.clear();
             changed = true;
         }
-        if self.hotkey.mode != "hold" && self.hotkey.key.eq_ignore_ascii_case("z") {
+        // Migrate the legacy default (Super+Z, toggle) and the older
+        // (z, toggle) shape to F2 + hold. We only rewrite when the saved
+        // config still matches the *previous* defaults — users who picked
+        // a custom hotkey or explicitly switched mode keep their choice.
+        let on_legacy_default = self.hotkey.key.eq_ignore_ascii_case("z")
+            && (self.hotkey.modifiers.is_empty()
+                || self.hotkey.modifiers == vec!["super".to_string()]);
+        if on_legacy_default {
+            self.hotkey.key = "F2".to_string();
+            self.hotkey.modifiers.clear();
             self.hotkey.mode = "hold".to_string();
             changed = true;
         }

@@ -10,6 +10,12 @@
 //!                 depending on current state). In `hold` mode this still
 //!                 effectively toggles because GNOME shortcuts fire once per
 //!                 chord press.
+//!   - `press`   — unconditionally send HotkeyPressed (start recording).
+//!                 Pair with `release` if your binding tool can fire on key
+//!                 down + key up separately (xbindkeys, evdev). GNOME's
+//!                 stock custom shortcuts can't, which is why hold-to-talk
+//!                 over plain `xsay toggle` is fundamentally a tap-toggle.
+//!   - `release` — unconditionally send HotkeyReleased (stop & transcribe).
 //!   - `cancel`  — send EscapePressed (abort any in-flight session).
 //!   - `show`    — focus the already-running settings window.
 //!   - `ping`    — no-op health check used by background autostart.
@@ -163,6 +169,20 @@ fn dispatch(cmd: &str, event_tx: &Sender<AppEvent>, shared_state: &SharedState) 
                 AppState::Transcribing | AppState::Injecting => return,
             };
             let _ = event_tx.send(ev);
+        }
+        // Unconditional press / release — the IPC half of hold-to-talk.
+        // Idempotent against the current state so re-sends from a flaky
+        // binding don't get the daemon stuck. Press from non-idle is
+        // silently dropped; release from non-recording is also dropped.
+        "press" => {
+            if matches!(*shared_state.lock(), AppState::Idle) {
+                let _ = event_tx.send(AppEvent::HotkeyPressed);
+            }
+        }
+        "release" => {
+            if matches!(*shared_state.lock(), AppState::Recording { .. }) {
+                let _ = event_tx.send(AppEvent::HotkeyReleased);
+            }
         }
         "cancel" => {
             let _ = event_tx.send(AppEvent::EscapePressed);
