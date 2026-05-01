@@ -11,15 +11,17 @@ use std::{
     time::Duration,
 };
 
-// Both states use square viewports; the disk centers in each window so the
-// anchor logic stays simple. Earlier 0.1.21 tried a 96×124 idle window so
-// it could carry a label below the disk — on the user's GNOME / mutter
-// session that combination of (transparent + always-on-top + no
-// decorations + skip-taskbar + non-square) caused the WM to never map
-// the window, the daemon ran but no overlay ever appeared. Reverting to
-// the known-good 44×44 idle size that worked through 0.1.20.
-const OVERLAY_IDLE_SIZE: egui::Vec2 = egui::vec2(44.0, 44.0);
-const OVERLAY_ACTIVE_SIZE: egui::Vec2 = egui::vec2(120.0, 120.0);
+// Single fixed viewport size for every state. We used to grow 44×44 → 120×120
+// on idle→active and the inverse on active→idle, but X11 / mutter applies
+// `XConfigureWindow(size)` and `XConfigureWindow(position)` in two separate
+// frames — between them the window has the new size pinned at the *old*
+// top-left, so the icon visibly snaps from one corner before sliding back.
+// Users described it as the badge "growing from the top-left and flashing".
+// Holding the OS window at the active size and just painting smaller content
+// inside it for idle eliminates that whole class of resize race; the disk
+// centre stays exactly where it was last frame.
+const OVERLAY_SIZE: egui::Vec2 = egui::vec2(120.0, 120.0);
+const IDLE_DISK_RADIUS: f32 = 20.0;
 
 const SETTINGS_VIEWPORT_ID: &str = "xsay_settings";
 const SETTINGS_SIZE: egui::Vec2 = egui::vec2(700.0, 660.0);
@@ -40,12 +42,13 @@ pub struct XsayOverlay {
     was_idle: bool,
     settings: SettingsState,
     shared_position: Arc<Mutex<String>>,
-    last_overlay_size: egui::Vec2,
     last_overlay_corner: String,
+    overlay_geometry_set: bool,
     last_passthrough: Option<bool>,
     window_level_set: bool,
     quit_requested: bool,
     settings_visible: bool,
+    idle_badge: Option<egui::TextureHandle>,
 }
 
 impl XsayOverlay {
@@ -83,14 +86,28 @@ impl XsayOverlay {
             was_idle: true,
             settings,
             shared_position,
-            last_overlay_size: egui::vec2(0.0, 0.0),
             last_overlay_corner: String::new(),
+            overlay_geometry_set: false,
             last_passthrough: None,
             window_level_set: false,
             quit_requested: false,
             settings_visible: false,
+            idle_badge: None,
         }
     }
+}
+
+/// Decode the idle-badge PNG into an egui [`ColorImage`]. Run once per
+/// process via [`XsayOverlay::idle_badge`]; the resulting `TextureHandle`
+/// is reused every frame.
+fn decode_idle_badge() -> egui::ColorImage {
+    let bytes = include_bytes!("../assets/idle-badge.png");
+    let icon = eframe::icon_data::from_png_bytes(bytes)
+        .expect("idle-badge PNG must decode at startup");
+    egui::ColorImage::from_rgba_unmultiplied(
+        [icon.width as usize, icon.height as usize],
+        &icon.rgba,
+    )
 }
 
 /// Where on the screen the disk center should sit for a given corner.
@@ -99,9 +116,13 @@ impl XsayOverlay {
 /// `window_pos_for_anchor` recenter each state's window on it.
 fn compute_icon_anchor(monitor: egui::Vec2, corner: &str) -> egui::Pos2 {
     let side_margin = 20.0;
-    let bottom_margin = 88.0;
+    // Lift the bottom-anchored disk above the GNOME shell / taskbar plus the
+    // user's natural focus zone so a Recording pill doesn't crowd the bottom
+    // edge. Tuned by eye against a 1440p panel + dash-to-dock; bump if the
+    // overlay sits too close to the panel for you.
+    let bottom_margin = 140.0;
     let top_margin = 20.0;
-    let half = OVERLAY_IDLE_SIZE.x * 0.5;
+    let half = OVERLAY_SIZE.x * 0.5;
     match corner {
         "top-left" => egui::pos2(side_margin + half, top_margin + half),
         "top-center" => egui::pos2(monitor.x * 0.5, top_margin + half),
@@ -147,21 +168,18 @@ impl eframe::App for XsayOverlay {
             }
         }
 
-        // Overlay close: cancel and keep running. The overlay isn't in any
-        // taskbar (with_taskbar(false)), so the only way close fires here
-        // is forced WM action (xkill, wmctrl -c). We don't quit blindly
-        // because the same window-creation path also seems to surface an
-        // unwanted close on certain compositors at startup, which would
-        // make the daemon vanish silently. Real "quit from taskbar" is
-        // handled in the settings viewport's WM-close branch below — when
-        // settings is visible it appears in taskbar, and that's where
-        // GNOME Activities' Quit lands.
+        // Treat any close on the overlay viewport as a quit. GNOME's dock
+        // right-click menu sends WM_DELETE_WINDOW to all of an app's
+        // top-level windows, including ours despite `with_taskbar(false)`,
+        // so the user's expectation is that "退出" actually exits.
+        // Earlier (0.1.21–0.1.23) we worried this would cause the daemon
+        // to vanish silently from spurious closes during launch, but those
+        // turned out to come from the GTK / winit race that 0.1.25 removed
+        // by dropping the tray icon. With GTK gone, close events here are
+        // unambiguously user intent.
         if ctx.input(|i| i.viewport().close_requested()) {
-            if self.quit_requested {
-                return;
-            } else {
-                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            }
+            self.quit_requested = true;
+            return;
         }
 
         let state = self.shared_state.lock().clone();
@@ -194,21 +212,14 @@ impl XsayOverlay {
         &mut self,
         ctx: &egui::Context,
         is_idle: bool,
-        became_active: bool,
+        _became_active: bool,
     ) {
-        let overlay_size = if is_idle {
-            OVERLAY_IDLE_SIZE
-        } else {
-            OVERLAY_ACTIVE_SIZE
-        };
         let corner = self.shared_position.lock().clone();
         let overlay_pos = ctx
             .input(|i| i.viewport().monitor_size)
             .filter(|m| m.x > 0.0 && m.y > 0.0)
-            .map(|m| window_pos_for_anchor(compute_icon_anchor(m, &corner), overlay_size));
-        let needs_position = became_active
-            || overlay_size != self.last_overlay_size
-            || corner != self.last_overlay_corner;
+            .map(|m| window_pos_for_anchor(compute_icon_anchor(m, &corner), OVERLAY_SIZE));
+        let corner_changed = corner != self.last_overlay_corner;
 
         // Only push viewport commands when the value actually changes —
         // X11/_NET_WM_STATE roundtrips at 30 fps starve the GNOME compositor
@@ -228,16 +239,18 @@ impl XsayOverlay {
             ctx.send_viewport_cmd(egui::ViewportCommand::MousePassthrough(passthrough));
             self.last_passthrough = Some(passthrough);
         }
-        if overlay_size != self.last_overlay_size {
-            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(overlay_size));
-        }
-        if needs_position
+        // The window stays at OVERLAY_SIZE forever — InnerSize only fires the
+        // first frame to confirm the requested size, then we never resize again.
+        // OuterPosition only updates if the user changed the corner config.
+        let needs_geometry = !self.overlay_geometry_set || corner_changed;
+        if needs_geometry
             && let Some(p) = overlay_pos
         {
             ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(p));
+            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(OVERLAY_SIZE));
+            self.overlay_geometry_set = true;
         }
 
-        self.last_overlay_size = overlay_size;
         self.last_overlay_corner = corner;
     }
 
@@ -246,13 +259,41 @@ impl XsayOverlay {
         let painter = ui.painter().clone();
         match state {
             AppState::Idle => {
-                let response = ui.interact(
+                let ctx = ui.ctx().clone();
+                let texture = self.idle_badge.get_or_insert_with(|| {
+                    ctx.load_texture(
+                        "xsay_idle_badge",
+                        decode_idle_badge(),
+                        egui::TextureOptions::LINEAR,
+                    )
+                });
+                // The PNG is square (480×480) and contains its own visual
+                // padding around the disk + label, so we draw it filling the
+                // full 120×120 window rect. Tint stays WHITE so the bundled
+                // colours pass through unchanged.
+                painter.image(
+                    texture.id(),
                     rect,
+                    egui::Rect::from_min_max(
+                        egui::pos2(0.0, 0.0),
+                        egui::pos2(1.0, 1.0),
+                    ),
+                    egui::Color32::WHITE,
+                );
+                // Click target is the disk region only (upper-centre of the
+                // PNG) — clicks on the bottom "xsay" label or the surrounding
+                // transparent margin wouldn't feel like buttons. Disk centre
+                // is at roughly 50 / 120 from the top; radius scaled from
+                // the original 480-px artwork.
+                let disk_rect = egui::Rect::from_center_size(
+                    egui::pos2(rect.center().x, rect.min.y + rect.height() * 0.40),
+                    egui::vec2(IDLE_DISK_RADIUS * 2.0, IDLE_DISK_RADIUS * 2.0),
+                );
+                let response = ui.interact(
+                    disk_rect,
                     egui::Id::new("xsay_idle_badge"),
                     egui::Sense::click(),
                 );
-                let disk_radius = rect.width().min(rect.height()) * 0.5 * 0.92;
-                paint_idle_logo(&painter, rect.center(), disk_radius, response.hovered());
                 if response.clicked() {
                     self.settings_visible = true;
                 }
@@ -339,80 +380,6 @@ impl XsayOverlay {
             self.settings_visible = false;
         }
     }
-}
-
-/// Flat blue mic badge for the idle state. Matches the mockup the user
-/// shipped: solid `theme::ACCENT` disk, white mic glyph centered, no
-/// gloss / inner highlights / drop shadow. Hover paints a soft outer
-/// halo so the click target is still discoverable.
-fn paint_idle_logo(
-    painter: &egui::Painter,
-    center: egui::Pos2,
-    radius: f32,
-    hovered: bool,
-) {
-    if hovered {
-        let [r, g, b, _] = crate::theme::ACCENT.to_array();
-        painter.circle_filled(
-            center,
-            radius * 1.12,
-            egui::Color32::from_rgba_premultiplied(r, g, b, 50),
-        );
-    }
-    painter.circle_filled(center, radius, crate::theme::ACCENT);
-    paint_mic_glyph(painter, center, radius);
-}
-
-/// White microphone glyph used by the idle badge.
-/// `unit` is the disk radius the glyph should fit inside; all dimensions
-/// derive from it so the same routine produces a 14 px glyph in the idle
-/// 44 px badge and would scale linearly for any other disk size.
-///
-/// Design: tall capsule body (the mic head) wrapped underneath by a shallow
-/// half-circle cradle, with a short vertical stand pole below the cradle's
-/// lowest point. The curved cradle is the visual cue that distinguishes
-/// "microphone" from "lightbulb on a base" — without it the white capsule
-/// inside a blue disk reads as a bulb on a screw cap.
-fn paint_mic_glyph(painter: &egui::Painter, center: egui::Pos2, unit: f32) {
-    // Mic head: rounded capsule, taller than wide so the silhouette feels
-    // mic-like rather than bulb-like.
-    let body_w = unit * 0.40;
-    let body_h = unit * 0.62;
-    let body_center = egui::pos2(center.x, center.y - unit * 0.10);
-    let body_rect = egui::Rect::from_center_size(body_center, egui::vec2(body_w, body_h));
-    painter.rect_filled(
-        body_rect,
-        egui::CornerRadius::same((body_w * 0.5).round() as u8),
-        egui::Color32::WHITE,
-    );
-
-    let stroke_w = (unit * 0.09).max(1.5);
-    let stroke = egui::Stroke::new(stroke_w, egui::Color32::WHITE);
-
-    // Cradle: a half-circle that wraps under the body. The cradle radius is
-    // larger than half the body width so the arc clearly extends past the
-    // capsule on both sides. Tip y is set just below the body bottom so the
-    // arms appear to "catch" the mic — without that overlap the cradle
-    // detaches from the body and the whole thing reads as two stacked shapes.
-    let body_bottom = body_center.y + body_h * 0.5;
-    let cradle_radius = unit * 0.42;
-    let cradle_center = egui::pos2(center.x, body_bottom - unit * 0.04);
-
-    // Approximate the lower half of a circle with line segments. egui has no
-    // arc primitive; 18 segments on a 22 px disk reads as smooth.
-    let segments = 18;
-    for i in 0..segments {
-        let t1 = (i as f32 / segments as f32) * std::f32::consts::PI;
-        let t2 = ((i + 1) as f32 / segments as f32) * std::f32::consts::PI;
-        let p1 = cradle_center + egui::vec2(t1.cos() * cradle_radius, t1.sin() * cradle_radius);
-        let p2 = cradle_center + egui::vec2(t2.cos() * cradle_radius, t2.sin() * cradle_radius);
-        painter.line_segment([p1, p2], stroke);
-    }
-
-    // Stand pole drops from the bottom of the cradle arc.
-    let stand_top = cradle_center + egui::vec2(0.0, cradle_radius);
-    let stand_bottom = stand_top + egui::vec2(0.0, unit * 0.18);
-    painter.line_segment([stand_top, stand_bottom], stroke);
 }
 
 fn paint_active_pill(
@@ -518,7 +485,7 @@ pub fn build_native_options(_config: &crate::config::OverlayConfig) -> eframe::N
             .with_always_on_top()
             .with_resizable(false)
             .with_taskbar(false)
-            .with_inner_size([OVERLAY_IDLE_SIZE.x, OVERLAY_IDLE_SIZE.y]),
+            .with_inner_size([OVERLAY_SIZE.x, OVERLAY_SIZE.y]),
         ..Default::default()
     }
 }

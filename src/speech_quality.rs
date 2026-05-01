@@ -163,8 +163,13 @@ fn looks_like_noise_transcript(s: &str, language: &str) -> bool {
 fn is_known_hallucination(s: &str, language: &str) -> bool {
     let norm = normalize_for_match(s);
 
+    // Filter ONLY single-utterance fillers — SenseVoice's quiet-input
+    // fallback always lands on these. Repeated forms ("好的好的", "嗯嗯")
+    // were previously here too but they're indistinguishable from a user
+    // genuinely saying "好的好的" twice; rejecting them silently swallows
+    // real speech and the user has no idea why nothing was pasted.
     const EXACT_HALLUCINATIONS: &[&str] = &[
-        // Single-letter/symbol fragments seen from ONNX backends on keyboard
+        // Single-letter / symbol fragments from ONNX backends on keyboard
         // taps, room noise, or clipped empty recordings.
         "o",
         "i",
@@ -172,34 +177,17 @@ fn is_known_hallucination(s: &str, language: &str) -> bool {
         "0",
         "1",
         // SenseVoice filler fallback set when audio is quiet-but-not-silent.
-        "okay",
-        "ok",
-        "yes",
         "yeah",
         "no",
         "嗯",
         "啊",
         "哦",
         "唉",
-        "好",
-        "好的",
-        "好的好的",
-        "好好",
-        "是",
-        "是的",
-        "对",
-        "对的",
-        "嗯嗯",
-        "哦哦",
         "噢",
         "呃",
-        "呃呃",
         "额",
-        "额额",
         "mm",
         "hmm",
-        "thank you",
-        "thanks",
     ];
     if EXACT_HALLUCINATIONS.iter().any(|h| norm == *h) {
         return true;
@@ -336,11 +324,18 @@ fn remove_dc(samples: &mut [f32]) {
 
 fn has_repetition(s: &str) -> bool {
     let chars: Vec<char> = s.chars().collect();
-    if chars.len() < 6 || chars.len() > 60 {
+    if chars.len() < 8 || chars.len() > 60 {
         return false;
     }
+    // Require a high repetition count before declaring "this is a model
+    // hallucination loop". Earlier we caught any 2-4-char substring that
+    // appeared ≥3 times, which silently dropped genuine repeated speech
+    // like "好的好的好的好的" (the user said "好的好的" twice and got nothing
+    // back). 6 occurrences is high enough to still catch the pathological
+    // "嗯嗯嗯嗯嗯嗯嗯嗯嗯嗯嗯嗯" filler loops without snagging conversational
+    // emphasis.
     for window in 2..=4 {
-        if chars.len() < window * 3 {
+        if chars.len() < window * 6 {
             continue;
         }
         let mut counts: HashMap<String, u32> = HashMap::new();
@@ -351,7 +346,7 @@ fn has_repetition(s: &str) -> bool {
             }
             let n = counts.entry(token).or_insert(0);
             *n += 1;
-            if *n >= 3 {
+            if *n >= 6 {
                 return true;
             }
         }
