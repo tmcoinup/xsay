@@ -118,9 +118,9 @@ fn compute_icon_anchor(monitor: egui::Vec2, corner: &str) -> egui::Pos2 {
     let side_margin = 20.0;
     // Lift the bottom-anchored disk above the GNOME shell / taskbar plus the
     // user's natural focus zone so a Recording pill doesn't crowd the bottom
-    // edge. Tuned by eye against a 1440p panel + dash-to-dock; bump if the
-    // overlay sits too close to the panel for you.
-    let bottom_margin = 140.0;
+    // edge. 114 is roughly the midpoint between the original 88 (too close
+    // to the dock) and the 140 we tried in 0.1.26 (too far up).
+    let bottom_margin = 114.0;
     let top_margin = 20.0;
     let half = OVERLAY_SIZE.x * 0.5;
     match corner {
