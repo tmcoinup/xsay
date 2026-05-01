@@ -115,12 +115,20 @@ jobs:
           cp "$SRC" "dist/xsay-linux-x64-${VER}.deb"
 
       # ---- NSIS installer for Windows ----
+      - name: Install NSIS (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          # NSIS used to ship preinstalled on windows-latest runners but
+          # has been dropped from the image; install via Chocolatey
+          # explicitly so makensis.exe is on PATH.
+          if (-not (Get-Command makensis -ErrorAction SilentlyContinue)) {
+            choco install nsis -y --no-progress
+          }
       - name: Build NSIS installer (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          # NSIS (makensis) is pre-installed on windows-latest runners,
-          # but not always on PATH — point at it explicitly.
           $nsis = 'C:\Program Files (x86)\NSIS\makensis.exe'
           if (-not (Test-Path $nsis)) {
             $nsis = (Get-Command makensis -ErrorAction SilentlyContinue).Source

@@ -177,6 +177,7 @@ fn is_known_hallucination(s: &str, language: &str) -> bool {
         "0",
         "1",
         // SenseVoice filler fallback set when audio is quiet-but-not-silent.
+        "okay",
         "yeah",
         "no",
         "嗯",

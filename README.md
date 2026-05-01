@@ -5,7 +5,7 @@
 <h1 align="center">xsay</h1>
 
 <p align="center">
-  <b>中文优先的离线 AI 语音输入工具</b> · 按住 Super+Z 录音，自动识别并粘贴到光标处<br>
+  <b>中文优先的离线 AI 语音输入工具</b> · 按住 F2 录音，自动识别并粘贴到光标处<br>
   Offline Chinese-first voice-to-text for Linux / macOS / Windows.
 </p>
 
@@ -21,12 +21,12 @@
 
 - **完全离线** — 所有模型本地推理，不联网、不上传任何音频
 - **中文优先 ASR** — 只保留 SenseVoice Small / SenseVoice Small FP32 / Paraformer-zh 三个 sherpa-onnx 模型
-- **三种触发方式** — 默认 Super+Z 按住说话，也可切点按切换或绑定 GNOME/KDE 系统快捷键调用 `xsay toggle`
+- **三种触发方式** — 默认按住 F2 说话，也可切点按切换或绑 GNOME/KDE 系统快捷键调用 `xsay toggle`
 - **中文/粤语/中英夹杂** — 默认固定中文，必要时可切自动检测或粤语
-- **幻觉过滤** — 识别静音直接返回空白；过滤 Whisper 训练数据里的"謝謝大家收看 / 字幕志愿者 XXX"和 SenseVoice 的"Okay./Yes./嗯。"填充词
-- **Wayland 友好** — evdev 可直接读键盘，系统快捷键 IPC 更稳；arboard 走原生剪贴板协议，uinput 自动粘贴按需启用
+- **幻觉过滤** — 识别静音直接返回空白；过滤 Whisper 训练数据里的"謝謝大家收看 / 字幕志愿者 XXX"和 SenseVoice 的填充词
+- **X11 / Wayland 同一条路** — Linux 全平台 evdev 直接读 `/dev/input/event*`，绕开 X11 XRecord（之前的死锁源）；arboard 走原生剪贴板协议，uinput 虚拟键盘做 Wayland-native 自动粘贴
 - **GPU 加速可选** — `--features cuda | vulkan | metal | hipblas`，按硬件选
-- **右上角常驻角标 + 原生托盘** — 桌面右上角小图标常驻，识别时放大为 120×120 动画话筒
+- **底部常驻浮层 + StatusNotifierItem 托盘** — 屏幕底部小图标常驻，录音/识别/输入时放大为 120×120 动画话筒；托盘走 ksni（Linux）/ Shell_NotifyIcon（Windows），不依赖 GTK
 - **历史记录** — 所有识别结果保存在 `~/.cache/xsay/history.jsonl`
 
 ## 安装 · Install
@@ -46,7 +46,7 @@ chmod +x xsay-*
 | xsay-linux-x64-vulkan | Linux x64 | NVIDIA / AMD / Intel GPU | 有显卡、想跑大模型 |
 | xsay-macos-arm64-metal | macOS Apple Silicon | Apple GPU | M 系列 Mac |
 
-Linux 裸二进制运行时依赖（`apt install`）：`libc6 libstdc++6 libgcc-s1 libx11-6 libxtst6 libasound2 libgtk-3-0 libayatana-appindicator3-1 libxdo3`。GNOME 顶栏托盘还建议安装并启用 `gnome-shell-extension-appindicator`。
+Linux 裸二进制运行时依赖（`apt install`）：`libc6 libstdc++6 libgcc-s1 libx11-6 libxtst6 libasound2 libxdo3`。GNOME 顶栏托盘还需要 `gnome-shell-extension-appindicator`（KDE / Cinnamon / Xfce 原生支持，无需扩展）。
 
 ### 或：用 .deb 包安装
 
@@ -63,11 +63,12 @@ sudo apt install ./xsay-linux-x64-*.deb
 sudo dpkg -i ./xsay-linux-x64-*.deb
 ```
 
-`.deb` 会声明 GTK/AppIndicator/X11/audio/xdo 等运行时依赖；推荐用
-`sudo apt install ./xsay_*.deb`，apt 会自动补齐，并默认安装 GNOME
-AppIndicator 推荐扩展。打包前运行
-`./packaging/deb/vendor-runtime-libs.sh` 时，也会把运行库随包放到
-`/usr/lib/xsay/`，方便离线安装。不要只拷贝 `/usr/bin/xsay` 这个启动入口。
+`.deb` 会声明 X11/audio/xdo 等运行时依赖；推荐用
+`sudo apt install ./xsay_*.deb`，apt 会自动补齐。`postinst` 还会把执行
+`apt install` 的当前用户加入 `input` 组，让内置 evdev 热键监听器能直
+接读 `/dev/input/event*` —— 注销重登一次后才生效。`./packaging/deb/vendor-runtime-libs.sh` 打包前跑过的话，会把运行库随包
+放到 `/usr/lib/xsay/`，方便离线安装。不要只拷贝 `/usr/bin/xsay` 这个
+启动入口。
 
 ### 或：从源码构建
 
@@ -75,29 +76,36 @@ AppIndicator 推荐扩展。打包前运行
 
 ## 快速开始 · Quick start
 
-1. **启动 xsay**（托盘常驻）
+1. **启动 xsay**（浮层 + 托盘常驻）
    ```bash
    xsay &
    ```
+   `.deb` 装的话，第一次启动前要 `newgrp input` 或注销重登一次让 input 组权限生效（用于 evdev 监听 `/dev/input/event*` 和 `/dev/uinput` 自动粘贴）。
 
-2. **第一次运行自动打开设置窗口（或从托盘打开）**
+2. **打开设置**：点屏幕底部的浮层图标，或右键托盘 → 「打开设置」
    - **模型** 标签页：点击 `SenseVoice Small` 右边 **安装**，等下载完（约 230 MB）
-   - **快捷键** 标签页：默认 `Super+Z` 按住说话；Wayland 下也可复制“外部触发”命令到系统快捷键
+   - **快捷键** 标签页：默认按住 **F2** 说话；不想用内置监听器也可绑系统快捷键到 `xsay toggle`
    - **常规** 标签页：选择识别语言、粘贴快捷键等
 
 3. **说话**
-   - 按住 Super+Z → 右上角小图标放大并显示 `● REC`
+   - 按住 F2 → 屏幕底部图标放大成 120×120 录音指示
    - 说话
    - 松开或停顿后自动识别 → 文字自动粘贴到光标处
 
-### 给 GNOME/KDE 用户：绑系统快捷键更稳（推荐）
+### 给 GNOME/KDE 用户：外部触发（可选）
 
-Wayland 下应用级按键捕获有限制。最可靠的是让**系统**派发快捷键，然后调用 `xsay toggle`：
+默认走 evdev 内置监听器（X11 / Wayland 都能用，不依赖 X server XRecord，
+也不会占用主线程 X 锁）。如果不想加 input 组，或者想用一个独立按键，
+可以让**系统**派发快捷键，调用 `xsay toggle`：
 
 1. 系统设置 → 键盘 → 自定义快捷键 → 新建
 2. **名称**：xsay（任取）
-3. **命令**：`/path/to/xsay toggle`（例如 `/home/你/.local/bin/xsay toggle`，见设置面板"外部触发"卡片里的绝对路径）
-4. **快捷键**：按 Super+Z 或任意组合
+3. **命令**：`/usr/bin/xsay toggle`
+4. **快捷键**：任意组合
+
+GNOME 自定义快捷键只在按下时触发，没法做"长按说话"。要按住 = 边说边录的体验，
+配合 `xbindkeys` 把按下绑到 `xsay press`、松开绑到 `xsay release`。或者直接
+用默认的 evdev 内置监听器，按住 F2 就行。
 
 ## 模型选择 · Models
 
@@ -152,10 +160,10 @@ sudo udevadm control --reload-rules && sudo modprobe uinput
 
 ```toml
 [hotkey]
-key = "z"                     # 按键名
-modifiers = ["super"]         # 修饰键，例如 ["ctrl", "shift"]
+key = "F2"                    # 按键名
+modifiers = []                # 修饰键，例如 ["ctrl", "shift"]
 mode = "hold"                 # 默认按住说话，松开后识别并输出
-internal_listener = true      # 默认启用内置键盘监听；也可关闭后用系统快捷键调用 xsay toggle
+internal_listener = true      # 默认启用 evdev 内置监听；置 false 只用系统快捷键调用 xsay toggle
 
 [audio]
 silence_threshold = 0.01      # 静音检测阈值
@@ -186,9 +194,13 @@ paste_shortcut = "ctrl-shift-v" # "ctrl-v" / "ctrl-shift-v" / "both"
 ## CLI 参考
 
 ```bash
-xsay                   # 启动守护进程（托盘常驻）
+xsay                   # 启动守护进程（浮层 + 托盘常驻）
 xsay toggle            # 切换录音（发 IPC 给运行中的守护进程，给系统快捷键绑用）
+xsay press             # 强制开始录音（配合 xbindkeys/evdev 在 key-down 触发）
+xsay release           # 强制停止 + 转写（配合 xbindkeys/evdev 在 key-up 触发）
 xsay cancel            # 中止当前会话
+xsay show              # 唤起设置窗口
+xsay quit              # 优雅退出守护进程
 xsay --config          # 打印配置文件路径
 xsay --list-devices    # 列出麦克风设备
 xsay --download-model  # 手动下载默认模型
@@ -202,8 +214,7 @@ xsay --help
 ```bash
 # Ubuntu / Debian
 sudo apt install build-essential cmake pkg-config \
-    libx11-dev libxtst-dev libasound2-dev libxdo-dev \
-    libgtk-3-dev libayatana-appindicator3-dev libclang-dev
+    libx11-dev libxtst-dev libasound2-dev libxdo-dev libclang-dev
 
 # Vulkan GPU 支持（可选，用于 Medium/Large Whisper）
 sudo apt install libvulkan-dev glslang-tools glslc
@@ -279,11 +290,13 @@ snapcraft upload --release=edge ./xsay_*_amd64.snap
 
 | 症状 | 原因 / 解决 |
 |---|---|
-| 按快捷键没反应 | Wayland 下 rdev 看不到原生窗口；`sudo usermod -aG input $USER` 让 xsay 用 evdev，或在系统快捷键里绑定 `xsay toggle` |
+| 按快捷键没反应、设置面板看到"内置键盘监听不可用" | 用户没在 input 组。`sudo usermod -aG input $USER` + 注销重登（或 `newgrp input`），让 evdev 能开 `/dev/input/event*` |
+| 托盘图标不显示 | GNOME 需要 `gnome-shell-extension-appindicator` 扩展。守护进程仍在跑，可以点屏幕底部浮层或 `xsay show` 唤起设置 |
 | 识别很慢 | 优先使用 SenseVoice Small；Paraformer 冷启动较慢但预热后延迟低 |
-| 识别出奇怪的话（"謝謝大家收看"等）| 麦克风无信号时 Whisper 会瞎编；xsay 有 RMS 门和黑名单，但也可能漏。看日志 `grep "peak RMS" /tmp/xsay.log` 确认麦克是否在工作 |
-| 没自动粘贴 | 完成 [Wayland 自动粘贴](#wayland-自动粘贴) 的 udev 设置 + 注销重登 |
-| "`Unknown` is not responding" | 旧 bug（主浮层未真正显示）已修，升级到最新版 |
+| 识别出奇怪的话（"謝謝大家收看"等）| 麦克风无信号时 ASR 会瞎编；xsay 有 RMS 门和黑名单，但也可能漏。看日志 `grep "peak RMS" /tmp/xsay.log` 确认麦克是否在工作 |
+| 重复词被吞（"好的好的"只出一次）| 0.1.30 起放宽了重复检测（≥6 次同字才丢）；如果还是吞，看 `grep -i "Skipping" /tmp/xsay.log` 看哪条规则触发了 |
+| 没自动粘贴 | 完成 [Wayland 自动粘贴](#wayland-自动粘贴) 的 udev + input 组设置 + 注销重登 |
+| GNOME 任务栏 dock 右键"退出"没反应 | 0.1.26 起 dock-quit 已修；旧版升级到最新即可 |
 
 日志：`RUST_LOG=xsay=debug xsay 2>&1 | tee /tmp/xsay.log`
 
