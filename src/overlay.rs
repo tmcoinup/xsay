@@ -116,11 +116,12 @@ fn decode_idle_badge() -> egui::ColorImage {
 /// `window_pos_for_anchor` recenter each state's window on it.
 fn compute_icon_anchor(monitor: egui::Vec2, corner: &str) -> egui::Pos2 {
     let side_margin = 20.0;
-    // Bottom margin from the screen edge to where the OVERLAY_SIZE-bounded
-    // viewport bottom sits. The disk centre ends up `OVERLAY_SIZE.y * 0.5`
-    // higher, which on the standard GNOME layout lands the badge just above
-    // the dock without crowding it.
-    let bottom_margin = 88.0;
+    // Window bottom sits flush against the bottom of the work area
+    // (egui's monitor_size already excludes the GNOME top panel + dock).
+    // The visible disk inside the 120-px window naturally floats ~40 px
+    // above the dock thanks to the transparent padding around it, so
+    // even bottom_margin = 0 doesn't crowd the icons.
+    let bottom_margin = 0.0;
     let top_margin = 20.0;
     let half = OVERLAY_SIZE.x * 0.5;
     match corner {

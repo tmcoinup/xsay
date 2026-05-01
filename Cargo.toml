@@ -1,6 +1,6 @@
 [package]
 name = "xsay"
-version = "0.1.29"
+version = "0.1.30"
 edition = "2024"
 description = "Chinese-first offline AI voice input tool with SenseVoice/Paraformer"
 license = "MIT"
@@ -95,6 +95,14 @@ rdev = "0.5"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 evdev = "0.13"
+# Pure-Rust StatusNotifierItem (KDE/AppIndicator) D-Bus client. Replaces
+# the GTK-based tray-icon crate that deadlocked on launch — `ksni` runs
+# its event loop on its own thread via zbus, no GTK or main-thread
+# requirement, no race against eframe's winit X11 connection. The icon
+# only renders if the user's compositor implements the SNI host — GNOME
+# needs the AppIndicator extension; KDE/Plasma, Cinnamon, Xfce ship it
+# natively.
+ksni = { version = "0.3", features = ["blocking"] }
 
 # Optional GPU acceleration. Default build = CPU only, works on any machine
 # without system dependencies beyond what's already required. Enthusiasts
