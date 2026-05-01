@@ -1,6 +1,6 @@
-//! 模型标签页：列出可选 Whisper 模型，支持下载/暂停/切换/删除。
+//! 模型标签页：列出中文优先的 Sherpa ONNX 模型，支持下载/暂停/切换/删除。
 
-use super::{models::MODELS, ActiveDownload, ModelInfo, SettingsState};
+use super::{ActiveDownload, ModelInfo, SettingsState, models::MODELS};
 use crate::config::Config;
 use crate::download::{self, DlState, DownloadCmd, DownloadProgress};
 use crate::theme::{self, Icon};
@@ -31,7 +31,11 @@ pub fn render(ui: &mut egui::Ui, state: &mut SettingsState) {
     let dl_downloaded = state
         .active_download
         .as_ref()
-        .map(|d| d.progress.downloaded.load(std::sync::atomic::Ordering::Relaxed))
+        .map(|d| {
+            d.progress
+                .downloaded
+                .load(std::sync::atomic::Ordering::Relaxed)
+        })
         .unwrap_or(0);
     let dl_total = state
         .active_download
@@ -45,8 +49,11 @@ pub fn render(ui: &mut egui::Ui, state: &mut SettingsState) {
     egui::ScrollArea::vertical().show(ui, |ui| {
         ui.spacing_mut().item_spacing.y = 6.0;
 
-        let cur_exists =
-            !current_filename.is_empty() && state.cache_dir.join(&current_filename).exists();
+        let cur_exists = MODELS
+            .iter()
+            .find(|m| m.filename == current_filename.as_str())
+            .map(|m| is_model_installed(m, &state.cache_dir.join(m.filename)))
+            .unwrap_or(false);
         if !cur_exists {
             render_no_model_banner(ui);
             ui.add_space(6.0);
@@ -66,22 +73,28 @@ pub fn render(ui: &mut egui::Ui, state: &mut SettingsState) {
             ui.add_space(2.0);
         }
 
-        ui.add_space(6.0);
+        if MODELS.iter().any(|m| m.backend == "whisper") {
+            ui.add_space(6.0);
 
-        ui.horizontal(|ui| {
-            let checking = state.checking_updates;
-            let label = if checking { "检查中…" } else { "检查所有模型更新" };
-            let color = if checking {
-                crate::theme::TEXT_SECONDARY
-            } else {
-                crate::theme::TEXT_PRIMARY
-            };
-            if theme::outlined_button(ui, Icon::Refresh, label, color, checking).clicked()
-                && !checking
-            {
-                check_all_updates(state);
-            }
-        });
+            ui.horizontal(|ui| {
+                let checking = state.checking_updates;
+                let label = if checking {
+                    "检查中…"
+                } else {
+                    "检查所有模型更新"
+                };
+                let color = if checking {
+                    crate::theme::TEXT_SECONDARY
+                } else {
+                    crate::theme::TEXT_PRIMARY
+                };
+                if theme::outlined_button(ui, Icon::Refresh, label, color, checking).clicked()
+                    && !checking
+                {
+                    check_all_updates(state);
+                }
+            });
+        }
 
         if let Some((msg, color, _)) = &state.status_msg {
             ui.add_space(6.0);
@@ -98,10 +111,8 @@ fn render_no_model_banner(ui: &mut egui::Ui) {
         .show(ui, |ui| {
             ui.set_min_width(ui.available_width());
             ui.horizontal(|ui| {
-                let (rect, _) = ui.allocate_exact_size(
-                    egui::vec2(18.0, 18.0),
-                    egui::Sense::hover(),
-                );
+                let (rect, _) =
+                    ui.allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::hover());
                 theme::draw_icon(ui.painter(), rect, Icon::Warning, crate::theme::WARNING);
                 ui.label(
                     egui::RichText::new("当前没有可用模型，xsay 无法识别语音")
@@ -110,7 +121,7 @@ fn render_no_model_banner(ui: &mut egui::Ui) {
                 );
             });
             ui.label(
-                egui::RichText::new("推荐下载 Medium (1.5 GB，中英文高精度)")
+                egui::RichText::new("推荐安装 SenseVoice Small（234 MB，中文日常输入首选）")
                     .color(crate::theme::WARNING)
                     .small(),
             );
@@ -136,13 +147,7 @@ fn render_model_row(
     // Sherpa models unpack into a subdirectory with an ONNX model +
     // tokens.txt; Whisper models are a single .bin file. Check for the
     // right artifact per backend so the UI shows accurate download state.
-    let is_downloaded = if model.backend == "whisper" {
-        local_path.is_file()
-    } else {
-        !model.onnx_model_file.is_empty()
-            && local_path.join(model.onnx_model_file).is_file()
-            && local_path.join("tokens.txt").is_file()
-    };
+    let is_downloaded = is_model_installed(model, &local_path);
     let has_partial = partial_path.exists() && !is_downloaded;
     let local_size = if model.backend == "whisper" {
         local_path.metadata().map(|m| m.len()).unwrap_or(0)
@@ -220,6 +225,16 @@ fn render_model_row(
     });
 }
 
+fn is_model_installed(model: &ModelInfo, local_path: &PathBuf) -> bool {
+    if model.backend == "whisper" {
+        local_path.is_file()
+    } else {
+        !model.onnx_model_file.is_empty()
+            && local_path.join(model.onnx_model_file).is_file()
+            && local_path.join("tokens.txt").is_file()
+    }
+}
+
 fn render_header_row(
     ui: &mut egui::Ui,
     model: &ModelInfo,
@@ -255,10 +270,8 @@ fn render_header_row(
             frame.show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 3.0;
-                    let (rect, _) = ui.allocate_exact_size(
-                        egui::vec2(12.0, 12.0),
-                        egui::Sense::hover(),
-                    );
+                    let (rect, _) =
+                        ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
                     theme::draw_icon(ui.painter(), rect, Icon::Check, egui::Color32::WHITE);
                     ui.label(
                         egui::RichText::new("当前使用")
@@ -279,10 +292,8 @@ fn render_header_row(
                     frame.show(ui, |ui| {
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = 3.0;
-                            let (rect, _) = ui.allocate_exact_size(
-                                egui::vec2(12.0, 12.0),
-                                egui::Sense::hover(),
-                            );
+                            let (rect, _) = ui
+                                .allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
                             theme::draw_icon(ui.painter(), rect, Icon::Up, egui::Color32::BLACK);
                             ui.label(
                                 egui::RichText::new("有更新")
@@ -337,7 +348,11 @@ fn render_source_row(
 
     // Source URL line (hidden if not applicable, e.g. Large variant with no release yet)
     if !source_url.is_empty() {
-        let label_prefix = if is_downloaded { "来源 " } else { "将下载自 " };
+        let label_prefix = if is_downloaded {
+            "来源 "
+        } else {
+            "将下载自 "
+        };
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
             ui.label(
@@ -438,7 +453,8 @@ fn render_action_row(
         if is_this_dl {
             let paused = matches!(dl_state_snap, Some(DlState::Paused));
             if paused {
-                if theme::icon_link_button(ui, Icon::Play, "继续", crate::theme::ACCENT).clicked() {
+                if theme::icon_link_button(ui, Icon::Play, "继续", crate::theme::ACCENT).clicked()
+                {
                     if model.backend == "whisper" {
                         start_model_download(model, state);
                     } else {
@@ -452,7 +468,8 @@ fn render_action_row(
                     let _ = dl.cmd_tx.send(DownloadCmd::Pause);
                 }
             }
-            if theme::icon_link_button(ui, Icon::X, "取消", crate::theme::DANGER_HOVER).clicked() {
+            if theme::icon_link_button(ui, Icon::X, "取消", crate::theme::DANGER_HOVER).clicked()
+            {
                 if let Some(dl) = &state.active_download {
                     let _ = dl.cmd_tx.send(DownloadCmd::Cancel);
                 }
@@ -501,8 +518,7 @@ fn render_action_row(
                     } else {
                         crate::theme::ACCENT
                     };
-                    if theme::icon_link_button(ui, Icon::Download, label, color)
-                        .clicked()
+                    if theme::icon_link_button(ui, Icon::Download, label, color).clicked()
                         && !installing
                     {
                         start_sherpa_install(model, state);
@@ -552,7 +568,8 @@ fn render_action_row(
 
             // "删除" on the currently-selected card (user still needs a way
             // to remove it if disk space matters). Same red link style.
-            if is_downloaded && is_current
+            if is_downloaded
+                && is_current
                 && theme::icon_link_button(ui, Icon::Trash, "删除", crate::theme::DANGER_HOVER)
                     .clicked()
             {
@@ -620,10 +637,7 @@ fn handle_download_completion(
                     crate::theme::SUCCESS,
                 );
             } else {
-                state.set_status(
-                    format!("✓ {} 下载完成", nice_name),
-                    crate::theme::SUCCESS,
-                );
+                state.set_status(format!("✓ {} 下载完成", nice_name), crate::theme::SUCCESS);
             }
         }
         clear_download_state(state);
@@ -659,10 +673,11 @@ fn persist_config(cfg: &Config) {
 /// Clears the `sherpa_installing` / `sherpa_install_rx` state and posts
 /// success/failure to the status toast.
 fn handle_sherpa_install_completion(state: &mut SettingsState) {
-    let Some(rx) = &state.sherpa_install_rx else {
-        return;
+    let result = match &state.sherpa_install_rx {
+        Some(rx) => rx.try_recv(),
+        None => return,
     };
-    match rx.try_recv() {
+    match result {
         Ok(Ok(filename)) => {
             let nice = MODELS
                 .iter()
@@ -670,18 +685,32 @@ fn handle_sherpa_install_completion(state: &mut SettingsState) {
                 .map(|m| m.name)
                 .unwrap_or(filename.as_str())
                 .to_string();
-            state.set_status(
-                format!("✓ {} 已安装（去点它的切换使用）", nice),
-                crate::theme::SUCCESS,
-            );
+            let current_filename = Config::load().ok().map(|cfg| cfg.model.hf_filename);
+            let current_installed = current_filename
+                .as_deref()
+                .and_then(|current| MODELS.iter().find(|m| m.filename == current))
+                .map(|m| is_model_installed(m, &state.cache_dir.join(m.filename)))
+                .unwrap_or(false);
+            if current_filename.as_deref() == Some(filename.as_str()) {
+                state.current_model_dirty = true;
+                state.set_status(format!("✓ {} 已安装并启用", nice), crate::theme::SUCCESS);
+            } else if !current_installed {
+                if let Some(model) = MODELS.iter().find(|m| m.filename == filename.as_str()) {
+                    let local_path = state.cache_dir.join(model.filename);
+                    switch_model(model, &local_path, state);
+                    state.set_status(format!("✓ {} 已安装并启用", nice), crate::theme::SUCCESS);
+                }
+            } else {
+                state.set_status(
+                    format!("✓ {} 已安装（可点击切换使用）", nice),
+                    crate::theme::SUCCESS,
+                );
+            }
             state.sherpa_installing = None;
             state.sherpa_install_rx = None;
         }
         Ok(Err(e)) => {
-            state.set_status(
-                format!("安装失败：{}", e),
-                crate::theme::DANGER_HOVER,
-            );
+            state.set_status(format!("安装失败：{}", e), crate::theme::DANGER_HOVER);
             state.sherpa_installing = None;
             state.sherpa_install_rx = None;
         }
@@ -736,10 +765,7 @@ fn start_sherpa_install(model: &ModelInfo, state: &mut SettingsState) {
         model_file: model.onnx_model_file.to_string(),
     });
     state.sherpa_installing = Some(model.filename.to_string());
-    state.set_status(
-        format!("{} 正在下载…", model.name),
-        crate::theme::ACCENT,
-    );
+    state.set_status(format!("{} 正在下载…", model.name), crate::theme::ACCENT);
 }
 
 /// Called when the sherpa tar.bz2 download finishes. Runs the untar
@@ -764,8 +790,7 @@ fn run_sherpa_extract(
     dest_dir: &std::path::Path,
     model_file: &str,
 ) -> Result<(), String> {
-    let extract_tmp =
-        std::env::temp_dir().join(format!("xsay-extract-{}", std::process::id()));
+    let extract_tmp = std::env::temp_dir().join(format!("xsay-extract-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&extract_tmp);
     std::fs::create_dir_all(&extract_tmp).map_err(|e| format!("mkdir: {}", e))?;
     std::fs::create_dir_all(dest_dir).map_err(|e| format!("mkdir: {}", e))?;
@@ -869,16 +894,16 @@ fn switch_model(model: &ModelInfo, local_path: &PathBuf, state: &mut SettingsSta
         {
             let backend = model.backend.to_string();
             std::thread::spawn(move || {
-                crate::sensevoice::warmup(
-                    &backend,
-                    &crate::sensevoice::OnnxOptions::default(),
-                );
+                crate::sensevoice::warmup(&backend, &crate::sensevoice::OnnxOptions::default());
             });
         }
     }
     state.current_model_dirty = true;
     state.set_status(
-        format!("✓ 已切换到 {}（后端 = {}，正在预热…）", model.name, model.backend),
+        format!(
+            "✓ 已切换到 {}（后端 = {}，正在预热…）",
+            model.name, model.backend
+        ),
         crate::theme::SUCCESS,
     );
 }

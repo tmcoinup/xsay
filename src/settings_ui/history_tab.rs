@@ -32,17 +32,13 @@ pub fn render(ui: &mut egui::Ui, state: &mut SettingsState) {
             let resp = theme::icon_link_button(ui, Icon::Trash, "清空", color);
             if enabled && resp.clicked() {
                 if let Err(e) = crate::history::clear() {
-                    state.set_status(
-                        format!("清空失败：{}", e),
-                        crate::theme::DANGER_HOVER,
-                    );
+                    state.set_status(format!("清空失败：{}", e), crate::theme::DANGER_HOVER);
                 } else {
                     state.set_status("历史已清空", crate::theme::SUCCESS);
                 }
                 state.history_dirty = true;
             }
-            if theme::icon_link_button(ui, Icon::Refresh, "刷新", crate::theme::ACCENT)
-                .clicked()
+            if theme::icon_link_button(ui, Icon::Refresh, "刷新", crate::theme::ACCENT).clicked()
             {
                 state.history_dirty = true;
             }
@@ -107,10 +103,7 @@ pub fn render(ui: &mut egui::Ui, state: &mut SettingsState) {
 
 /// Returns `Some(text)` if the user clicked Copy on this entry; caller
 /// applies the clipboard + status effect outside the cache borrow.
-fn render_entry_card(
-    ui: &mut egui::Ui,
-    entry: &crate::history::HistoryEntry,
-) -> Option<String> {
+fn render_entry_card(ui: &mut egui::Ui, entry: &crate::history::HistoryEntry) -> Option<String> {
     let mut copied: Option<String> = None;
     egui::Frame::new()
         .fill(crate::theme::BG_CARD)

@@ -21,6 +21,14 @@ fn is_wayland() -> bool {
             .unwrap_or(false)
 }
 
+#[cfg(target_os = "linux")]
+pub(crate) fn warmup_synthetic_keyboard() {
+    uinput_paste::warmup();
+}
+
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn warmup_synthetic_keyboard() {}
+
 pub fn run_inject_thread(
     inject_rx: Receiver<InjectCmd>,
     done_tx: Sender<()>,
@@ -42,7 +50,9 @@ pub fn run_inject_thread(
 
                 let cfg = shared_config.lock().clone();
                 match cfg.method.as_str() {
-                    "type" => inject_via_keystrokes(&text),
+                    "type" => {
+                        inject_via_keystrokes(&text, cfg.clipboard_delay_ms, &cfg.paste_shortcut)
+                    }
                     _ => inject_via_clipboard(&text, cfg.clipboard_delay_ms, &cfg.paste_shortcut),
                 }
 
@@ -66,7 +76,11 @@ fn inject_via_clipboard(text: &str, delay_ms: u64, paste_shortcut: &str) {
         }
     };
 
-    let prev_text = if wayland { None } else { clipboard.get_text().ok() };
+    let prev_text = if wayland {
+        None
+    } else {
+        clipboard.get_text().ok()
+    };
 
     if let Err(e) = clipboard.set_text(text) {
         log::error!("Failed to set clipboard: {}", e);
@@ -87,7 +101,7 @@ fn inject_via_clipboard(text: &str, delay_ms: u64, paste_shortcut: &str) {
         if !pasted {
             let preview = preview_for_notification(text);
             notify(
-                "xsay 识别完成（请按 Ctrl+V 粘贴）",
+                &format!("xsay 识别完成（请按 {} 粘贴）", paste_hint(paste_shortcut)),
                 &format!("{}\n自动粘贴失败（见 /tmp/xsay.log）", preview),
             );
         }
@@ -98,20 +112,11 @@ fn inject_via_clipboard(text: &str, delay_ms: u64, paste_shortcut: &str) {
         // uinput permission dependency, instantaneous). Errors are
         // logged rather than swallowed so unusual X11 setups surface.
         match Enigo::new(&Settings::default()) {
-            Ok(mut enigo) => {
-                if let Err(e) = enigo.key(Key::Control, Direction::Press) {
-                    log::warn!("enigo: Ctrl press failed ({})", e);
-                }
-                std::thread::sleep(Duration::from_millis(10));
-                if let Err(e) = enigo.key(Key::Unicode('v'), Direction::Click) {
-                    log::warn!("enigo: V click failed ({})", e);
-                }
-                std::thread::sleep(Duration::from_millis(10));
-                let _ = enigo.key(Key::Control, Direction::Release);
-            }
+            Ok(mut enigo) => send_enigo_paste(&mut enigo, paste_shortcut),
             Err(e) => {
                 log::warn!(
-                    "Failed to create enigo (paste will rely on manual Ctrl+V): {}",
+                    "Failed to create enigo (paste will rely on manual {}): {}",
+                    paste_hint(paste_shortcut),
                     e
                 );
             }
@@ -127,17 +132,50 @@ fn inject_via_clipboard(text: &str, delay_ms: u64, paste_shortcut: &str) {
     }
 }
 
-/// Persistent /dev/uinput virtual keyboard for Wayland-native paste AND
-/// for synthesizing hotkey-release events after hotkey_evdev grabs a
-/// physical keyboard (see hotkey_evdev::run_device_loop). Created lazily
-/// on first use and kept alive for the process lifetime — per-use
-/// re-creation (as `ydotool` without its daemon does) has a 50-150ms
-/// enumeration window during which emits are silently dropped, which
-/// is why subprocess-based paste unreliably lands.
-///
-/// Module is pub(crate) so hotkey_evdev can call send_release() to
-/// cancel the compositor's held-key state when we EVIOCGRAB a device
-/// mid-chord.
+fn send_enigo_paste(enigo: &mut Enigo, paste_shortcut: &str) {
+    match paste_shortcut {
+        "ctrl-shift-v" => send_enigo_combo(enigo, true),
+        "both" => {
+            send_enigo_combo(enigo, false);
+            std::thread::sleep(Duration::from_millis(20));
+            send_enigo_combo(enigo, true);
+        }
+        _ => send_enigo_combo(enigo, false),
+    }
+}
+
+fn send_enigo_combo(enigo: &mut Enigo, shift: bool) {
+    if let Err(e) = enigo.key(Key::Control, Direction::Press) {
+        log::warn!("enigo: Ctrl press failed ({})", e);
+    }
+    if shift {
+        if let Err(e) = enigo.key(Key::Shift, Direction::Press) {
+            log::warn!("enigo: Shift press failed ({})", e);
+        }
+    }
+    std::thread::sleep(Duration::from_millis(10));
+    if let Err(e) = enigo.key(Key::Unicode('v'), Direction::Click) {
+        log::warn!("enigo: V click failed ({})", e);
+    }
+    std::thread::sleep(Duration::from_millis(10));
+    if shift {
+        let _ = enigo.key(Key::Shift, Direction::Release);
+    }
+    let _ = enigo.key(Key::Control, Direction::Release);
+}
+
+fn paste_hint(paste_shortcut: &str) -> &'static str {
+    match paste_shortcut {
+        "ctrl-shift-v" => "Ctrl+Shift+V",
+        "both" => "Ctrl+V 或 Ctrl+Shift+V",
+        _ => "Ctrl+V",
+    }
+}
+
+/// Persistent /dev/uinput virtual keyboard for Wayland-native paste.
+/// Created lazily on first use and kept alive for the process lifetime:
+/// per-use re-creation (as `ydotool` without its daemon does) has a
+/// 50-150ms enumeration window during which emits are silently dropped.
 #[cfg(target_os = "linux")]
 pub(crate) mod uinput_paste {
     use evdev::{AttributeSet, KeyCode, KeyEvent, uinput::VirtualDevice};
@@ -160,97 +198,15 @@ pub(crate) mod uinput_paste {
         Mutex::new(dev)
     });
 
-    /// Register a broad key set so the device can synthesize release
-    /// events for arbitrary user-chosen hotkeys (modifiers + A-Z +
-    /// 0-9 + F1-F12 + common control keys). A uinput device can only
-    /// emit keys declared at build time; anything not in this set
-    /// would silently no-op when released via send_release.
+    /// Register only the keys needed for paste. A uinput device can only
+    /// emit keys declared at build time.
     fn register_keys() -> AttributeSet<KeyCode> {
         let mut keys = AttributeSet::<KeyCode>::new();
         // Paste shortcut keys
         keys.insert(KeyCode::KEY_LEFTCTRL);
-        keys.insert(KeyCode::KEY_RIGHTCTRL);
         keys.insert(KeyCode::KEY_LEFTSHIFT);
-        keys.insert(KeyCode::KEY_RIGHTSHIFT);
-        keys.insert(KeyCode::KEY_LEFTALT);
-        keys.insert(KeyCode::KEY_RIGHTALT);
-        keys.insert(KeyCode::KEY_LEFTMETA);
-        keys.insert(KeyCode::KEY_RIGHTMETA);
-        // Letters A-Z
-        for c in b'A'..=b'Z' {
-            if let Some(k) = letter_to_key(c as char) {
-                keys.insert(k);
-            }
-        }
-        // Digits 0-9
-        keys.insert(KeyCode::KEY_0);
-        keys.insert(KeyCode::KEY_1);
-        keys.insert(KeyCode::KEY_2);
-        keys.insert(KeyCode::KEY_3);
-        keys.insert(KeyCode::KEY_4);
-        keys.insert(KeyCode::KEY_5);
-        keys.insert(KeyCode::KEY_6);
-        keys.insert(KeyCode::KEY_7);
-        keys.insert(KeyCode::KEY_8);
-        keys.insert(KeyCode::KEY_9);
-        // Function keys
-        keys.insert(KeyCode::KEY_F1);
-        keys.insert(KeyCode::KEY_F2);
-        keys.insert(KeyCode::KEY_F3);
-        keys.insert(KeyCode::KEY_F4);
-        keys.insert(KeyCode::KEY_F5);
-        keys.insert(KeyCode::KEY_F6);
-        keys.insert(KeyCode::KEY_F7);
-        keys.insert(KeyCode::KEY_F8);
-        keys.insert(KeyCode::KEY_F9);
-        keys.insert(KeyCode::KEY_F10);
-        keys.insert(KeyCode::KEY_F11);
-        keys.insert(KeyCode::KEY_F12);
-        // Common non-letter hotkey keys
-        keys.insert(KeyCode::KEY_SPACE);
-        keys.insert(KeyCode::KEY_ENTER);
-        keys.insert(KeyCode::KEY_ESC);
-        keys.insert(KeyCode::KEY_TAB);
-        keys.insert(KeyCode::KEY_CAPSLOCK);
-        keys.insert(KeyCode::KEY_HOME);
-        keys.insert(KeyCode::KEY_END);
-        keys.insert(KeyCode::KEY_PAGEUP);
-        keys.insert(KeyCode::KEY_PAGEDOWN);
-        keys.insert(KeyCode::KEY_INSERT);
-        keys.insert(KeyCode::KEY_DELETE);
+        keys.insert(KeyCode::KEY_V);
         keys
-    }
-
-    fn letter_to_key(c: char) -> Option<KeyCode> {
-        match c {
-            'A' => Some(KeyCode::KEY_A),
-            'B' => Some(KeyCode::KEY_B),
-            'C' => Some(KeyCode::KEY_C),
-            'D' => Some(KeyCode::KEY_D),
-            'E' => Some(KeyCode::KEY_E),
-            'F' => Some(KeyCode::KEY_F),
-            'G' => Some(KeyCode::KEY_G),
-            'H' => Some(KeyCode::KEY_H),
-            'I' => Some(KeyCode::KEY_I),
-            'J' => Some(KeyCode::KEY_J),
-            'K' => Some(KeyCode::KEY_K),
-            'L' => Some(KeyCode::KEY_L),
-            'M' => Some(KeyCode::KEY_M),
-            'N' => Some(KeyCode::KEY_N),
-            'O' => Some(KeyCode::KEY_O),
-            'P' => Some(KeyCode::KEY_P),
-            'Q' => Some(KeyCode::KEY_Q),
-            'R' => Some(KeyCode::KEY_R),
-            'S' => Some(KeyCode::KEY_S),
-            'T' => Some(KeyCode::KEY_T),
-            'U' => Some(KeyCode::KEY_U),
-            'V' => Some(KeyCode::KEY_V),
-            'W' => Some(KeyCode::KEY_W),
-            'X' => Some(KeyCode::KEY_X),
-            'Y' => Some(KeyCode::KEY_Y),
-            'Z' => Some(KeyCode::KEY_Z),
-            _ => None,
-        }
     }
 
     fn create() -> std::io::Result<VirtualDevice> {
@@ -267,27 +223,10 @@ pub(crate) mod uinput_paste {
         Ok(dev)
     }
 
-    /// Emit KEY_UP events for a set of keycodes. Previously used by
-    /// hotkey_evdev after grabbing a physical keyboard to halt the
-    /// compositor's auto-repeat for hotkey chord keys. The grab-based
-    /// approach was dropped (it had rare but severe failure modes that
-    /// could lock the user's entire keyboard), but the helper stays
-    /// public(crate) in case future surgical uses arise.
-    #[allow(dead_code)]
-    pub fn send_release(codes: &[evdev::KeyCode]) {
+    pub fn warmup() {
         let mut guard = DEVICE.lock();
         if guard.is_none() {
             *guard = create().ok();
-        }
-        let Some(dev) = guard.as_mut() else {
-            return;
-        };
-        let events: Vec<_> = codes
-            .iter()
-            .map(|&k| *KeyEvent::new(k, 0))
-            .collect();
-        if let Err(e) = dev.emit(&events) {
-            log::warn!("uinput: synthetic release failed: {}", e);
         }
     }
 
@@ -337,22 +276,18 @@ pub(crate) mod uinput_paste {
         (KeyCode::KEY_LEFTSHIFT, 0),
         (KeyCode::KEY_LEFTCTRL, 0),
     ];
-
     fn emit(dev: &mut VirtualDevice, seq: &[(KeyCode, i32)]) -> bool {
-        let events: Vec<_> = seq
-            .iter()
-            .map(|&(k, v)| *KeyEvent::new(k, v))
-            .collect();
-        match dev.emit(&events) {
-            Ok(()) => {
-                log::debug!("uinput: {} keys sent", events.len());
-                true
-            }
-            Err(e) => {
+        let mut ok = true;
+        for &(k, v) in seq {
+            let event = [*KeyEvent::new(k, v)];
+            if let Err(e) = dev.emit(&event) {
                 log::warn!("uinput emit failed: {}", e);
-                false
+                ok = false;
             }
+            std::thread::sleep(std::time::Duration::from_millis(12));
         }
+        log::debug!("uinput: {} key events sent", seq.len());
+        ok
     }
 }
 
@@ -365,7 +300,7 @@ mod uinput_paste {
     }
 }
 
-fn inject_via_keystrokes(text: &str) {
+fn inject_via_keystrokes(text: &str, fallback_delay_ms: u64, fallback_shortcut: &str) {
     let mut enigo = match Enigo::new(&Settings::default()) {
         Ok(e) => e,
         Err(e) => {
@@ -376,9 +311,7 @@ fn inject_via_keystrokes(text: &str) {
 
     if let Err(e) = enigo.text(text) {
         log::error!("Failed to type text: {}", e);
-        // Fall back to clipboard with the "both" policy so the user gets
-        // auto-paste in whatever target they're focused on.
-        inject_via_clipboard(text, 80, "both");
+        inject_via_clipboard(text, fallback_delay_ms, fallback_shortcut);
     }
 }
 

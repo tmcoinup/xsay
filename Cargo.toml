@@ -1,8 +1,8 @@
 [package]
 name = "xsay"
-version = "0.1.4"
+version = "0.1.14"
 edition = "2024"
-description = "AI voice input tool — hold a hotkey to record, release to transcribe and type"
+description = "Chinese-first offline AI voice input tool with SenseVoice/Paraformer"
 license = "MIT"
 readme = "README.md"
 
@@ -19,13 +19,24 @@ winres = "0.1"
 maintainer = "mason"
 copyright = "2026, mason"
 extended-description = """\
-xsay captures microphone audio while a configurable hotkey is held \
-(or on tap-toggle), transcribes it offline with whisper.cpp, and types \
-the result into the focused window. Supports Chinese + English, Wayland \
-and X11 on Linux."""
+xsay captures microphone audio with a configurable hotkey, transcribes it \
+offline with SenseVoice/Paraformer via sherpa-onnx, and types the result \
+into the focused window. Optimized for Chinese dictation on Linux."""
 section = "utils"
 priority = "optional"
-depends = "libc6"
+# Runtime packages only. Tools and headers such as cmake, pkg-config and
+# `*-dev` packages are build-time requirements for source builds; end users
+# installing the .deb should only need these shared-library/runtime packages.
+# `apt install ./xsay_*.deb` will resolve them automatically. For fully
+# offline installs, run `packaging/deb/vendor-runtime-libs.sh` before
+# `cargo deb --no-build`; the launcher below then loads bundled copies from
+# /usr/lib/xsay.
+depends = "libc6, libasound2, libgtk-3-0, libayatana-appindicator3-1 | libappindicator3-1, libx11-6, libxi6, libxtst6, libxdo3"
+# GNOME hides AppIndicator/status icons unless this shell extension is present
+# and enabled. Keep it as a recommendation because KDE/Xfce/etc. provide their
+# own tray surfaces.
+recommends = "gnome-shell-extension-appindicator"
+maintainer-scripts = "packaging/deb/maintainer-scripts"
 assets = [
     # Install the real binary next to vendored runtime libs. The launcher below
     # sets LD_LIBRARY_PATH so `dpkg -i` installs do not need apt to resolve the
@@ -41,6 +52,9 @@ assets = [
     ["share/icons/hicolor/48x48/apps/xsay.png",     "usr/share/icons/hicolor/48x48/apps/xsay.png",     "644"],
     ["share/icons/hicolor/256x256/apps/xsay.png",   "usr/share/icons/hicolor/256x256/apps/xsay.png",   "644"],
     ["share/icons/hicolor/scalable/apps/xsay.svg",  "usr/share/icons/hicolor/scalable/apps/xsay.svg",  "644"],
+    # Allow the input group to write /dev/uinput so Wayland auto-paste can use
+    # xsay's virtual keyboard without manual rule creation.
+    ["packaging/deb/60-xsay-uinput.rules", "lib/udev/rules.d/60-xsay-uinput.rules", "644"],
 ]
 
 [dependencies]

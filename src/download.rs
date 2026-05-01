@@ -4,8 +4,8 @@ use std::{
     io::{Read, Write},
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicU64, Ordering},
         Arc,
+        atomic::{AtomicU64, Ordering},
     },
 };
 
@@ -41,10 +41,7 @@ pub enum DownloadCmd {
 }
 
 pub fn hf_url(repo: &str, filename: &str) -> String {
-    format!(
-        "https://huggingface.co/{}/resolve/main/{}",
-        repo, filename
-    )
+    format!("https://huggingface.co/{}/resolve/main/{}", repo, filename)
 }
 
 pub fn partial_path(dest: &Path) -> PathBuf {
@@ -185,11 +182,7 @@ fn is_tls_close_notify_error(e: &std::io::Error) -> bool {
 }
 
 /// Spawn a thread that does a HEAD request and sends back (filename, Option<size_bytes>).
-pub fn check_remote_size(
-    url: String,
-    result_tx: Sender<(String, Option<u64>)>,
-    filename: String,
-) {
+pub fn check_remote_size(url: String, result_tx: Sender<(String, Option<u64>)>, filename: String) {
     std::thread::spawn(move || {
         let size = ureq::request("HEAD", &url)
             .call()

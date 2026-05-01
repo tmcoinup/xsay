@@ -98,26 +98,41 @@ fn load_model(path: &PathBuf) -> Option<WhisperContext> {
 
 fn process_request(
     ctx: Option<&WhisperContext>,
-    req: TranscribeReq,
+    mut req: TranscribeReq,
     transcript_tx: &Sender<TranscriptSeg>,
 ) {
     if req.samples.is_empty() {
         return;
     }
 
-    // RMS energy gate — runs before any backend. Every ASR model we
+    // Noise gate — runs before any backend. Every ASR model we
     // support (Whisper, SenseVoice, Paraformer) hallucinates confidently
     // on near-silent audio: Whisper outputs training fanfic (字幕志愿者,
     // 謝謝大家收看), SenseVoice falls back to conversational fillers
-    // ("Okay.", "Yes.", "嗯。", "好的。"). Gate at the audio level so the
-    // model never sees input that can't plausibly contain speech.
-    let peak = peak_rms(&req.samples);
-    if peak < 0.008 {
-        log::debug!(
-            "Skipping transcribe: peak RMS {:.4} below speech threshold",
-            peak
+    // ("Okay.", "Yes.", "嗯。", "好的。"). Gate at the audio level and
+    // attenuate low-energy windows so the model sees less room noise.
+    let stats = crate::speech_quality::speech_stats(&req.samples);
+    if !stats.looks_like_speech() {
+        log::info!(
+            "Skipping transcribe: likely noise/silence \
+             (duration {:.2}s, peak {:.4}, floor {:.4}, active {:.0}%, run {} frames)",
+            stats.duration_s,
+            stats.peak_rms,
+            stats.noise_floor,
+            stats.active_ratio * 100.0,
+            stats.longest_active_run,
         );
-        let _ = transcript_tx.send(TranscriptSeg { text: String::new() });
+        let _ = transcript_tx.send(TranscriptSeg {
+            text: String::new(),
+        });
+        return;
+    }
+    req.samples = crate::speech_quality::denoise_for_asr(&req.samples, &stats);
+    if req.samples.len() < 8000 {
+        log::debug!("Skipping transcribe: trimmed speech shorter than 0.5s");
+        let _ = transcript_tx.send(TranscriptSeg {
+            text: String::new(),
+        });
         return;
     }
 
@@ -232,7 +247,9 @@ fn process_request(
         match state.full_get_segment_text(i) {
             Ok(seg) => {
                 let trimmed = seg.trim();
-                if !trimmed.is_empty() && !is_silence_marker(trimmed) {
+                if !trimmed.is_empty()
+                    && !crate::speech_quality::is_silence_marker(trimmed, &req.language)
+                {
                     text.push_str(trimmed);
                     text.push(' ');
                 }
@@ -241,7 +258,7 @@ fn process_request(
         }
     }
 
-    let text = text.trim().to_string();
+    let text = crate::speech_quality::finalize_transcript(&text, &req.language).unwrap_or_default();
     log::debug!("Transcription result: {:?}", text);
 
     let _ = transcript_tx.send(TranscriptSeg { text });
@@ -288,14 +305,9 @@ fn try_onnx_backend(req: &TranscribeReq, tx: &Sender<TranscriptSeg>) -> bool {
     // Strip SenseVoice-style <|language|>/<|emotion|> markers. Paraformer
     // doesn't emit these so the scan is a no-op — cheap either way.
     let cleaned = strip_markers(&raw);
-    let trimmed = cleaned.trim();
-    if trimmed.is_empty() || is_silence_marker(trimmed) {
-        let _ = tx.send(TranscriptSeg { text: String::new() });
-    } else {
-        let _ = tx.send(TranscriptSeg {
-            text: trimmed.to_string(),
-        });
-    }
+    let text =
+        crate::speech_quality::finalize_transcript(&cleaned, &req.language).unwrap_or_default();
+    let _ = tx.send(TranscriptSeg { text });
     true
 }
 
@@ -320,232 +332,4 @@ fn strip_markers(s: &str) -> String {
         }
     }
     out
-}
-
-/// Whisper emits sentinels like `[BLANK_AUDIO]`, `(silence)`, `[noise]`,
-/// `[music]` when it thinks the audio contains no speech. They're not real
-/// transcripts and shouldn't reach history or be injected into the user's
-/// focused window. Treat any single bracketed/parenthesized token as a
-/// silence marker — these are non-linguistic metadata by convention in
-/// Whisper's training data.
-///
-/// Also filters the well-known *hallucinations* Whisper emits when audio
-/// is unclear or very short. The model was trained on massive amounts of
-/// YouTube captions and news clips, so under low signal-to-noise it
-/// confidently outputs memorized closers like "謝謝大家收看" or
-/// "Thanks for watching, please subscribe". These ruin history and paste
-/// random phrases into the user's document, so we drop them outright.
-fn is_silence_marker(segment: &str) -> bool {
-    let s = segment.trim();
-    if s.len() < 2 {
-        return false;
-    }
-    let first = s.chars().next().unwrap();
-    let last = s.chars().last().unwrap();
-    if matches!(
-        (first, last),
-        ('[', ']') | ('(', ')') | ('*', '*') | ('<', '>')
-    ) {
-        return true;
-    }
-    is_known_hallucination(s)
-}
-
-/// Well-known phrases Whisper hallucinates on silent/short/noisy input.
-/// Gathered from whisper.cpp / OpenAI Whisper issue trackers and real user
-/// reports. Uses *substring* matching (not exact) so variants with stray
-/// punctuation, extra words, or partial runs still get filtered.
-///
-/// Also catches repetition-based hallucinations: when Whisper gets stuck
-/// (common on noisy/silent tail-ends) it loops the same 2-4 char token
-/// several times — e.g. "打赏 打赏 打赏". Any 2-4 char substring that
-/// appears 3+ times in a short segment is almost certainly hallucinated.
-fn is_known_hallucination(s: &str) -> bool {
-    // Normalize for comparison: lowercase + strip surrounding whitespace
-    // and common closing punctuation so "Okay." and "okay" and "Okay "
-    // are treated the same.
-    let norm: String = s
-        .trim()
-        .to_lowercase()
-        .trim_end_matches(['.', '。', '!', '！', '?', '？', ',', '，', ' '])
-        .to_string();
-
-    // Exact-match-only fillers. These are short enough that a substring
-    // match would swallow legitimate phrases ("好的，继续" contains "好的").
-    // Only a whole-segment match flags them as hallucination.
-    const EXACT_HALLUCINATIONS: &[&str] = &[
-        // SenseVoice's filler fallback set when audio is quiet-but-not-silent
-        "okay",
-        "ok",
-        "yes",
-        "yeah",
-        "no",
-        "嗯",
-        "啊",
-        "哦",
-        "唉",
-        "好",
-        "好的",
-        "是",
-        "是的",
-        "对",
-        "对的",
-        "mm",
-        "hmm",
-        "thank you",
-        "thanks",
-    ];
-    if EXACT_HALLUCINATIONS.iter().any(|h| norm == *h) {
-        return true;
-    }
-
-    // Substring-match hallucinations. These are distinctive long phrases
-    // that (a) almost never show up in normal speech and (b) often carry
-    // trailing random names (e.g. "字幕志愿者 杨茜茜"). Match anywhere in
-    // the segment so the attached name doesn't prevent the filter.
-    const SUBSTRING_HALLUCINATIONS: &[&str] = &[
-        // Chinese — YouTube / TV closers
-        "謝謝大家收看",
-        "谢谢大家收看",
-        "謝謝觀看",
-        "谢谢观看",
-        "謝謝觀賞",
-        "谢谢观赏",
-        "請訂閱",
-        "请订阅",
-        "訂閱我的頻道",
-        "订阅我的频道",
-        "謝謝大家",
-        "谢谢大家",
-        "感謝觀看",
-        "感谢观看",
-        "多謝收看",
-        "多谢收看",
-        // Chinese — Bilibili / Douyin / video-creator closers
-        "请不吝点赞",
-        "請不吝點讚",
-        "點贊訂閱",
-        "点赞订阅",
-        "一鍵三連",
-        "一键三连",
-        "点赞关注转发",
-        "點贊關注轉發",
-        "打赏",
-        // Chinese — subtitle / translation credits (from Whisper training
-        // on fansubbed TV / films). Matches anything containing these
-        // substrings so attached names (e.g. "中文字幕志愿者 杨茜茜") get
-        // filtered regardless of who the random hallucinated name is.
-        "字幕志愿者",
-        "字幕志願者",
-        "字幕由",
-        "字幕組",
-        "字幕组",
-        "字幕制作",
-        "字幕製作",
-        "翻译志愿者",
-        "翻譯志願者",
-        "中文字幕",
-        "繁體字幕",
-        "简体字幕",
-        "字幕提供",
-        "翻譯：",
-        "翻译：",
-        "校對：",
-        "校对：",
-        "mediaclub",
-        // Our own initial-prompt echoes. Whisper occasionally parrots the
-        // priming prompt verbatim (or with a minor swap like 以下→这些/下面)
-        // when audio is silent or too short to seed real output. Catch all
-        // variants so the priming trick still gives us Simplified Chinese
-        // without letting the prompt leak into the user's text.
-        "以下是普通话的简体中文内容",
-        "这些是普通话的简体中文内容",
-        "下面是普通话的简体中文内容",
-        "普通话的简体中文内容",
-        // English — YouTube / podcast closers
-        "thanks for watching",
-        "thank you for watching",
-        "thanks for listening",
-        "please subscribe",
-        "subscribe to my channel",
-        "like and subscribe",
-        "see you next time",
-    ];
-    if SUBSTRING_HALLUCINATIONS.iter().any(|h| norm.contains(h)) {
-        return true;
-    }
-
-    has_repetition(&norm)
-}
-
-/// Heuristic: any 2-, 3-, or 4-char substring that appears 3+ times in a
-/// segment this short is almost always a Whisper stuck-in-a-loop
-/// hallucination, not natural repetition. Examples caught:
-///   "打赏 打赏 打赏"
-///   "你在搞什麼,你在搞什麼,你在搞什麼"
-///   "Huh? Huh? Huh?"
-/// Skipped for long segments because a genuine transcript of a long
-/// speech can legitimately use a word 3+ times.
-fn has_repetition(s: &str) -> bool {
-    let chars: Vec<char> = s.chars().collect();
-    if chars.len() < 6 || chars.len() > 60 {
-        return false;
-    }
-    for window in 2..=4 {
-        if chars.len() < window * 3 {
-            continue;
-        }
-        let mut counts: std::collections::HashMap<String, u32> =
-            std::collections::HashMap::new();
-        for start in 0..=chars.len() - window {
-            let token: String = chars[start..start + window].iter().collect();
-            // Skip tokens that are all whitespace / punctuation.
-            if token.chars().all(|c| !c.is_alphanumeric() && !is_cjk(c)) {
-                continue;
-            }
-            let n = counts.entry(token).or_insert(0);
-            *n += 1;
-            if *n >= 3 {
-                return true;
-            }
-        }
-    }
-    false
-}
-
-/// Peak RMS over 20ms windows. Using a windowed peak (not global RMS)
-/// means a single loud burst in an otherwise silent clip still registers
-/// as speech — global RMS would average it away. 20ms at 16kHz = 320
-/// samples, small enough to catch a single syllable but large enough that
-/// ambient electrical noise averages out.
-fn peak_rms(samples: &[f32]) -> f32 {
-    const WINDOW: usize = 320;
-    if samples.len() < WINDOW {
-        return rms_block(samples);
-    }
-    let mut peak: f32 = 0.0;
-    for start in (0..samples.len()).step_by(WINDOW) {
-        let end = (start + WINDOW).min(samples.len());
-        let r = rms_block(&samples[start..end]);
-        if r > peak {
-            peak = r;
-        }
-    }
-    peak
-}
-
-fn rms_block(samples: &[f32]) -> f32 {
-    if samples.is_empty() {
-        return 0.0;
-    }
-    let sum_sq: f32 = samples.iter().map(|s| s * s).sum();
-    (sum_sq / samples.len() as f32).sqrt()
-}
-
-fn is_cjk(c: char) -> bool {
-    matches!(c as u32,
-        0x3400..=0x4DBF   // CJK Ext A
-      | 0x4E00..=0x9FFF   // CJK Unified
-      | 0x20000..=0x2A6DF // CJK Ext B
-    )
 }

@@ -1,11 +1,11 @@
 use crate::config::HotkeyConfig;
 use crossbeam_channel::Sender;
 use parking_lot::Mutex;
-use rdev::{listen, EventType, Key};
+use rdev::{EventType, Key, listen};
 use std::collections::HashSet;
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
     Arc,
+    atomic::{AtomicBool, Ordering},
 };
 
 #[derive(Debug, Clone)]
@@ -45,6 +45,10 @@ impl CaptureSlot {
 /// won't capture native-Wayland application focus).
 #[derive(Debug, Clone, PartialEq)]
 pub enum Backend {
+    /// Stable default: no in-process global keyboard listener. Recording is
+    /// triggered through the IPC command (`xsay toggle`) bound in the desktop's
+    /// native custom-shortcut settings.
+    SystemShortcutOnly,
     /// rdev on X11 (or macOS / Windows) — global shortcuts work.
     RdevX11,
     /// rdev falling back on Wayland — only sees XWayland keystrokes.
@@ -120,6 +124,9 @@ pub fn run_hotkey_thread(
                 }
 
                 let config = cfg.lock();
+                if !config.internal_listener {
+                    return;
+                }
                 let target = parse_key(&config.key);
                 let mode = config.mode.clone();
                 let held = held_clone.lock();
@@ -158,6 +165,9 @@ pub fn run_hotkey_thread(
                 }
 
                 let config = cfg.lock();
+                if !config.internal_listener {
+                    return;
+                }
                 let target = parse_key(&config.key);
                 let is_hold_mode = config.mode != "toggle";
                 drop(config);
@@ -313,11 +323,7 @@ fn rdev_key_to_name(key: &Key) -> Option<&'static str> {
 /// Write the captured key + currently held modifiers into the slot. Skipped
 /// for bare modifier presses (ctrl, shift, alt, etc.) and for keys we don't
 /// know how to name.
-fn record_capture(
-    key: &Key,
-    held: &Arc<Mutex<HashSet<Key>>>,
-    slot: &Arc<CaptureSlot>,
-) {
+fn record_capture(key: &Key, held: &Arc<Mutex<HashSet<Key>>>, slot: &Arc<CaptureSlot>) {
     // Ignore bare modifiers — user is probably still composing the chord.
     if matches!(
         key,

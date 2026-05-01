@@ -58,31 +58,18 @@ fn render_transcription_card(
 ) {
     theme::section_card(ui, "语音识别", |ui| {
         theme::form_row(ui, "识别语言", |ui| {
-            let langs: &[(&str, &str)] = &[
-                ("auto", "自动检测"),
-                ("zh", "中文"),
-                ("en", "English"),
-                ("ja", "日本語"),
-                ("ko", "한국어"),
-                ("fr", "Français"),
-                ("de", "Deutsch"),
-                ("es", "Español"),
-                ("ru", "Русский"),
-            ];
+            let langs: &[(&str, &str)] = &[("zh", "中文"), ("auto", "自动检测"), ("yue", "粤语")];
             let current_label = langs
                 .iter()
                 .find(|(c, _)| *c == tx.language)
                 .map(|(_, l)| *l)
-                .unwrap_or("自动检测");
+                .unwrap_or("中文");
 
             egui::ComboBox::from_id_salt("lang")
                 .selected_text(current_label)
                 .show_ui(ui, |ui| {
                     for (code, label) in langs {
-                        if ui
-                            .selectable_label(tx.language == *code, *label)
-                            .clicked()
-                        {
+                        if ui.selectable_label(tx.language == *code, *label).clicked() {
                             tx.language = code.to_string();
                             *changed = true;
                         }
@@ -91,7 +78,7 @@ fn render_transcription_card(
         });
         theme::helper_text(
             ui,
-            "自动检测就能处理中英混说（如 \"这个 API 怎么 deploy\"），一般保持默认",
+            "默认固定中文，日常输入延迟更稳定；中英夹杂或粤语场景可切到自动检测 / 粤语",
         );
 
         ui.add_space(6.0);
@@ -108,11 +95,9 @@ fn render_transcription_card(
                         .size(crate::theme::FONT_BODY),
                 );
                 ui.label(
-                    egui::RichText::new(
-                        "勾选后不论说什么语言都强制输出英文。中文用户通常不勾",
-                    )
-                    .color(crate::theme::TEXT_SECONDARY)
-                    .size(crate::theme::FONT_SM),
+                    egui::RichText::new("勾选后不论说什么语言都强制输出英文。中文用户通常不勾")
+                        .color(crate::theme::TEXT_SECONDARY)
+                        .size(crate::theme::FONT_SM),
                 );
             });
         });
@@ -120,7 +105,10 @@ fn render_transcription_card(
         ui.add_space(6.0);
         theme::form_row(ui, "推理线程", |ui| {
             let mut n = tx.n_threads;
-            if ui.add(egui::Slider::new(&mut n, 1..=16).integer()).changed() {
+            if ui
+                .add(egui::Slider::new(&mut n, 1..=16).integer())
+                .changed()
+            {
                 tx.n_threads = n;
                 *changed = true;
             }
@@ -169,14 +157,22 @@ fn render_injection_card(
         // Paste shortcut selector — Wayland auto-paste via uinput has to
         // know which key combo the target app expects. Terminals and CLI
         // tools (Claude Code, Codex) use Ctrl+Shift+V; most GUI apps use
-        // Ctrl+V; "both" sends both with a short delay for mixed usage.
+        // Ctrl+V. Chinese-service defaults to Ctrl+Shift+V for terminal use.
         ui.add_space(6.0);
         theme::form_row(ui, "粘贴快捷键", |ui| {
             ui.vertical(|ui| {
                 let options: &[(&str, &str, &str)] = &[
+                    (
+                        "ctrl-shift-v",
+                        "Ctrl + Shift + V",
+                        "终端 / Claude Code / Codex CLI",
+                    ),
                     ("ctrl-v", "Ctrl + V", "GUI 文本框（浏览器、编辑器）"),
-                    ("ctrl-shift-v", "Ctrl + Shift + V", "终端 / Claude Code / Codex CLI"),
-                    ("both", "两者都试", "兼容最广，但部分应用会弹出\"粘贴特殊\"对话框"),
+                    (
+                        "both",
+                        "两者都试",
+                        "兼容最广，但部分应用会弹出\"粘贴特殊\"对话框",
+                    ),
                 ];
                 for (code, title, subtitle) in options {
                     let selected = inj.paste_shortcut == *code;
@@ -208,11 +204,7 @@ fn render_injection_card(
     });
 }
 
-fn render_audio_card(
-    ui: &mut egui::Ui,
-    aud: &mut crate::config::AudioConfig,
-    changed: &mut bool,
-) {
+fn render_audio_card(ui: &mut egui::Ui, aud: &mut crate::config::AudioConfig, changed: &mut bool) {
     theme::section_card(ui, "音频与停顿检测", |ui| {
         theme::form_row(ui, "静音阈值", |ui| {
             let mut t = aud.silence_threshold;
@@ -233,7 +225,10 @@ fn render_audio_card(
         ui.add_space(6.0);
         theme::form_row(ui, "停顿长度", |ui| {
             let mut f = aud.silence_frames as i32;
-            if ui.add(egui::Slider::new(&mut f, 8..=80).integer()).changed() {
+            if ui
+                .add(egui::Slider::new(&mut f, 8..=80).integer())
+                .changed()
+            {
                 aud.silence_frames = f as u32;
                 *changed = true;
             }
@@ -282,7 +277,10 @@ fn render_microphone_card(ui: &mut egui::Ui, state: &SettingsState) {
                 );
             });
         }
-        theme::helper_text(ui, "目前使用系统默认设备，切换设备需在 config.toml 中指定。");
+        theme::helper_text(
+            ui,
+            "目前使用系统默认设备，切换设备需在 config.toml 中指定。",
+        );
     });
 }
 
@@ -328,10 +326,7 @@ fn render_system_card(ui: &mut egui::Ui, state: &mut SettingsState) {
                     );
                 }
                 Err(e) => {
-                    state.set_status(
-                        format!("自启动设置失败：{}", e),
-                        crate::theme::DANGER_HOVER,
-                    );
+                    state.set_status(format!("自启动设置失败：{}", e), crate::theme::DANGER_HOVER);
                 }
             }
         }

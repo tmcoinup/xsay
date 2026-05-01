@@ -74,7 +74,7 @@ fn render_entry(exe: &std::path::Path) -> String {
          Type=Application\n\
          Name=xsay\n\
          Comment=AI Voice Input Tool\n\
-         Exec={}\n\
+         Exec={} --background\n\
          Terminal=false\n\
          X-GNOME-Autostart-enabled=true\n\
          Categories=Utility;\n",

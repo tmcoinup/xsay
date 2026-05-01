@@ -22,6 +22,12 @@ pub struct HotkeyConfig {
     pub modifiers: Vec<String>,
     /// "hold" (push-to-talk) or "toggle" (tap to start, tap to stop)
     pub mode: String,
+    /// Whether xsay starts its own passive rdev/evdev keyboard listener.
+    ///
+    /// This keeps the historical "press the configured hotkey directly"
+    /// behavior working. Users on restrictive Wayland setups can disable it
+    /// and bind a desktop shortcut to `xsay toggle` instead.
+    pub internal_listener: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -38,7 +44,7 @@ pub struct AudioConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ModelConfig {
-    /// Path to a local GGML model file; empty = auto-download
+    /// Path to a local model file/directory; empty = managed cache
     pub path: String,
     pub hf_repo: String,
     pub hf_filename: String,
@@ -51,12 +57,10 @@ pub struct TranscriptionConfig {
     pub language: String,
     pub translate: bool,
     pub n_threads: i32,
-    /// ASR backend:
-    ///   "whisper"    — whisper.cpp via whisper-rs (default, CPU/GPU via features)
-    ///   "sensevoice" — SenseVoice-Small ONNX via sherpa-rs; requires
-    ///                  xsay built with `--features sensevoice`, model
-    ///                  downloaded to ~/.cache/xsay/models/sensevoice/.
-    ///                  Better Chinese accuracy, ~5-7x faster than Whisper-L.
+    /// ASR backend exposed by the Chinese model catalogue:
+    ///   "sensevoice"      — SenseVoice-Small int8 ONNX
+    ///   "sensevoice-fp32" — SenseVoice-Small float32 ONNX
+    ///   "paraformer"      — Paraformer-zh ONNX
     pub backend: String,
 }
 
@@ -101,6 +105,7 @@ impl Default for HotkeyConfig {
             key: "z".to_string(),
             modifiers: vec!["super".to_string()],
             mode: "hold".to_string(),
+            internal_listener: true,
         }
     }
 }
@@ -119,8 +124,8 @@ impl Default for ModelConfig {
     fn default() -> Self {
         Self {
             path: String::new(),
-            hf_repo: "ggerganov/whisper.cpp".to_string(),
-            hf_filename: "ggml-base.bin".to_string(),
+            hf_repo: "k2-fsa/sherpa-onnx".to_string(),
+            hf_filename: crate::model_catalog::DEFAULT_MODEL_FILENAME.to_string(),
         }
     }
 }
@@ -128,10 +133,10 @@ impl Default for ModelConfig {
 impl Default for TranscriptionConfig {
     fn default() -> Self {
         Self {
-            language: "auto".to_string(),
+            language: "zh".to_string(),
             translate: false,
             n_threads: 4,
-            backend: "whisper".to_string(),
+            backend: crate::model_catalog::default_model().backend.to_string(),
         }
     }
 }
@@ -139,11 +144,10 @@ impl Default for TranscriptionConfig {
 impl Default for OverlayConfig {
     fn default() -> Self {
         Self {
-            // Bottom-center: least-obtrusive default for a voice input
-            // overlay — user attention is typically mid-screen text
-            // fields, and top-right badges collide with notification
-            // toasts on GNOME/KDE.
-            position: "bottom-center".to_string(),
+            // Chinese-service default: keep the resident xsay badge in the
+            // top-right so it is visible even when the native tray is hidden
+            // by GNOME/AppIndicator availability.
+            position: "top-right".to_string(),
             opacity: 0.9,
         }
     }
@@ -153,12 +157,11 @@ impl Default for InjectionConfig {
     fn default() -> Self {
         Self {
             method: "clipboard".to_string(),
-            clipboard_delay_ms: 80,
-            // Default "both" so out-of-box usage works in both GUI apps
-            // and terminals without the user needing to know to flip a
-            // toggle. Power users in LibreOffice / VS Code can switch to
-            // "ctrl-v" to avoid paste-special side effects.
-            paste_shortcut: "both".to_string(),
+            clipboard_delay_ms: 120,
+            // Chinese-service default targets terminal AI coding tools first:
+            // Claude Code / Codex CLI / GNOME Terminal all expect Ctrl+Shift+V.
+            // Most GUI apps also accept it as paste-plain-text.
+            paste_shortcut: "ctrl-shift-v".to_string(),
         }
     }
 }
@@ -167,7 +170,8 @@ impl Config {
     pub fn load() -> Result<Self, XsayError> {
         let path = Self::config_path()?;
         if !path.exists() {
-            let default = Config::default();
+            let mut default = Config::default();
+            default.normalize_for_chinese_service();
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent)?;
             }
@@ -177,11 +181,95 @@ impl Config {
             return Ok(default);
         }
         let text = std::fs::read_to_string(&path)?;
-        Ok(toml::from_str(&text)?)
+        let legacy_missing_internal_listener = hotkey_internal_listener_missing(&text);
+        let mut cfg: Config = toml::from_str(&text)?;
+        if legacy_missing_internal_listener {
+            cfg.hotkey.internal_listener = true;
+        }
+        if cfg.normalize_for_chinese_service() {
+            if let Ok(text) = toml::to_string_pretty(&cfg) {
+                let _ = std::fs::write(&path, text);
+                log::info!(
+                    "Migrated config to Chinese model catalogue at {}",
+                    path.display()
+                );
+            }
+        }
+        if legacy_missing_internal_listener {
+            if let Ok(text) = toml::to_string_pretty(&cfg) {
+                let _ = std::fs::write(&path, text);
+                log::info!(
+                    "Migrated legacy hotkey config to keep internal listener enabled at {}",
+                    path.display()
+                );
+            }
+        }
+        Ok(cfg)
     }
 
     pub fn config_path() -> Result<PathBuf, XsayError> {
         let base = dirs::config_dir().ok_or(XsayError::NoConfigDir)?;
         Ok(base.join("xsay").join("config.toml"))
     }
+
+    /// Normalize older configs that pointed at Whisper models. The current
+    /// product surface is Chinese-first and exposes only the three ONNX
+    /// models in `model_catalog`, so stale `ggml-*.bin` selections would
+    /// otherwise leave users on an invisible Whisper backend with no model.
+    fn normalize_for_chinese_service(&mut self) -> bool {
+        let mut changed = false;
+
+        match crate::model_catalog::backend_for_filename(&self.model.hf_filename) {
+            Some(backend) => {
+                if self.transcription.backend != backend {
+                    self.transcription.backend = backend.to_string();
+                    changed = true;
+                }
+            }
+            None => {
+                let default = crate::model_catalog::default_model();
+                self.model.hf_filename = default.filename.to_string();
+                self.transcription.backend = default.backend.to_string();
+                self.model.path.clear();
+                changed = true;
+            }
+        }
+
+        if self.model.hf_repo != "k2-fsa/sherpa-onnx" {
+            self.model.hf_repo = "k2-fsa/sherpa-onnx".to_string();
+            changed = true;
+        }
+        if !matches!(self.transcription.language.as_str(), "zh" | "auto" | "yue") {
+            self.transcription.language = "zh".to_string();
+            changed = true;
+        }
+        if self.hotkey.key.is_empty() {
+            self.hotkey.key = "z".to_string();
+            changed = true;
+        }
+        if self.hotkey.mode != "hold" && self.hotkey.key.eq_ignore_ascii_case("z") {
+            self.hotkey.mode = "hold".to_string();
+            changed = true;
+        }
+        if self.injection.paste_shortcut == "both" {
+            self.injection.paste_shortcut = "ctrl-shift-v".to_string();
+            changed = true;
+        }
+        if self.injection.clipboard_delay_ms < 120 {
+            self.injection.clipboard_delay_ms = 120;
+            changed = true;
+        }
+
+        changed
+    }
+}
+
+fn hotkey_internal_listener_missing(text: &str) -> bool {
+    let Ok(value) = toml::from_str::<toml::Value>(text) else {
+        return false;
+    };
+    value
+        .get("hotkey")
+        .and_then(|hotkey| hotkey.get("internal_listener"))
+        .is_none()
 }

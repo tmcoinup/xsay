@@ -8,7 +8,7 @@ mod hotkey_tab;
 mod model_tab;
 mod models;
 
-pub use models::{ModelInfo, MODELS};
+pub use models::{MODELS, ModelInfo};
 
 use crate::config::{AudioConfig, Config, HotkeyConfig, InjectionConfig, TranscriptionConfig};
 use crate::download::{DownloadCmd, DownloadProgress};
@@ -18,7 +18,7 @@ use parking_lot::Mutex;
 use std::{
     collections::HashMap,
     path::PathBuf,
-    sync::{atomic::AtomicBool, Arc},
+    sync::{Arc, atomic::AtomicBool},
 };
 
 pub struct ActiveDownload {
@@ -69,6 +69,7 @@ pub struct SettingsState {
     pub hotkey_key: String,
     pub hotkey_mods: Vec<String>,
     pub hotkey_mode: String,
+    pub hotkey_internal_listener: bool,
     pub capturing: bool,
 
     // Shared state (worker threads read these live)
@@ -160,6 +161,7 @@ impl SettingsState {
             hotkey_key: config.hotkey.key.clone(),
             hotkey_mods: config.hotkey.modifiers.clone(),
             hotkey_mode: config.hotkey.mode.clone(),
+            hotkey_internal_listener: config.hotkey.internal_listener,
             capturing: false,
             shared_hotkey,
             shared_audio,
@@ -248,6 +250,7 @@ pub fn render(ctx: &egui::Context, state: &mut SettingsState) -> bool {
     //   - render "xsay 设置" using the injected CJK font
     //   - match the dark theme instead of a white Gnome/Yaru bar
     //   - draw macOS-style traffic lights to match the Figma reference
+    //   - show the compiled package version for install verification
     egui::Panel::top("xsay_titlebar")
         .exact_size(36.0)
         .frame(
@@ -284,8 +287,8 @@ pub fn render(ctx: &egui::Context, state: &mut SettingsState) -> bool {
 }
 
 /// Custom window title bar. macOS-style traffic lights on the left (red =
-/// close, yellow/green decorative), "xsay 设置" centered, empty space on the
-/// right. The whole bar is a drag surface.
+/// close, yellow/green decorative), "xsay 设置" centered, version on the right.
+/// The whole bar is a drag surface.
 ///
 /// Returns true if the red close button was clicked.
 fn render_title_bar(ui: &mut egui::Ui, ctx: &egui::Context) -> bool {
@@ -310,6 +313,15 @@ fn render_title_bar(ui: &mut egui::Ui, ctx: &egui::Context) -> bool {
         "xsay 设置",
         egui::FontId::proportional(crate::theme::FONT_BODY),
         crate::theme::TEXT_PRIMARY,
+    );
+
+    let version_label = format!("v{}", env!("CARGO_PKG_VERSION"));
+    ui.painter().text(
+        egui::pos2(bar_rect.max.x - 8.0, bar_rect.center().y),
+        egui::Align2::RIGHT_CENTER,
+        version_label,
+        egui::FontId::proportional(crate::theme::FONT_SM),
+        crate::theme::TEXT_SECONDARY,
     );
 
     // Three macOS traffic-light dots on the left, 12px diameter, 8px gap.
@@ -389,10 +401,7 @@ fn render_tab_button(
         .layout_no_wrap(label.to_string(), font_id.clone(), egui::Color32::WHITE)
         .size();
 
-    let total = egui::vec2(
-        pad_x * 2.0 + icon_size + gap + text_size.x,
-        height,
-    );
+    let total = egui::vec2(pad_x * 2.0 + icon_size + gap + text_size.x, height);
     let (rect, response) = ui.allocate_exact_size(total, egui::Sense::click());
 
     let (bg, fg) = if active {

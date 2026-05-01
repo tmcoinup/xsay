@@ -11,14 +11,23 @@
 //!                 effectively toggles because GNOME shortcuts fire once per
 //!                 chord press.
 //!   - `cancel`  — send EscapePressed (abort any in-flight session).
+//!   - `show`    — focus the already-running settings window.
+//!   - `ping`    — no-op health check used by background autostart.
 
 use crate::hotkey::AppEvent;
 use crate::state::{AppState, SharedState};
 use crossbeam_channel::Sender;
+use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
+use std::os::fd::AsRawFd;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::time::Duration;
+
+pub struct InstanceGuard {
+    #[allow(dead_code)]
+    file: File,
+}
 
 pub fn socket_path() -> PathBuf {
     // XDG_RUNTIME_DIR is the canonical per-user runtime path on Linux
@@ -29,6 +38,46 @@ pub fn socket_path() -> PathBuf {
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("/tmp"));
     dir.join("xsay.sock")
+}
+
+pub fn lock_path() -> PathBuf {
+    let dir = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/tmp"));
+    dir.join("xsay.lock")
+}
+
+/// Try to become the single long-lived xsay daemon for this user.
+///
+/// The lock is advisory and tied to the process file descriptor, so it is
+/// released automatically on crash/exit. This is deliberately separate from
+/// the IPC socket: old versions unconditionally removed the socket at startup,
+/// which let a second process steal the command endpoint and create duplicate
+/// tray icons/hotkey listeners.
+pub fn acquire_instance_lock() -> Result<Option<InstanceGuard>, String> {
+    let path = lock_path();
+    let file = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .open(&path)
+        .map_err(|e| format!("无法打开实例锁 {}：{}", path.display(), e))?;
+
+    let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    if rc == 0 {
+        file.set_len(0)
+            .map_err(|e| format!("无法写入实例锁 {}：{}", path.display(), e))?;
+        writeln!(&file, "{}", std::process::id())
+            .map_err(|e| format!("无法写入实例锁 {}：{}", path.display(), e))?;
+        return Ok(Some(InstanceGuard { file }));
+    }
+
+    let err = std::io::Error::last_os_error();
+    if err.raw_os_error() == Some(libc::EWOULDBLOCK) || err.raw_os_error() == Some(libc::EAGAIN) {
+        Ok(None)
+    } else {
+        Err(format!("无法锁定实例锁 {}：{}", path.display(), err))
+    }
 }
 
 /// Client side — called from the short-lived `xsay toggle` / `xsay cancel`
@@ -108,6 +157,10 @@ fn dispatch(cmd: &str, event_tx: &Sender<AppEvent>, shared_state: &SharedState) 
         "cancel" => {
             let _ = event_tx.send(AppEvent::EscapePressed);
         }
+        "show" => {
+            crate::tray::request_show_settings();
+        }
+        "ping" => {}
         other => {
             log::warn!("Unknown IPC command: {:?}", other);
         }

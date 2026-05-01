@@ -138,23 +138,20 @@ whisper-rs 封装。
 
 系统托盘图标 + 右键菜单。
 - `spawn_in_background()` — Linux 下单独线程 `gtk::init() + gtk::main()`，其他平台普通线程
-- `TrayAction = ShowSettings | Quit`
+- `TrayAction = ShowSettings`；退出菜单项在托盘事件线程直接结束进程
 - `poll_events() -> Vec<TrayAction>` — UI 每帧拉取
 
-菜单项程序化生成，图标是代码画的 32×32 RGBA 红色圆+白色话筒。
+菜单项程序化生成，图标使用打包进来的 xsay 32×32 RGBA 品牌图。
 
 ---
 
 ## `overlay.rs`
 
 eframe::App 实现，主线程跑。
-- `XsayOverlay` — 持有所有 `Arc<Mutex<...>>`、动画相位、settings 子 state
-- 根据 `AppState` 切不同尺寸：90×30 徽章 / 120×120 动画
-- `ViewportCommand::OuterPosition` 根据 `monitor_size + shared_position` 重新定位
-- `show_viewport_immediate` 弹出设置窗
-- 每帧 `tray::poll_events()`
-
-- `build_native_options(&OverlayConfig)` — 启动时的 `NativeOptions`
+- `XsayOverlay` — 持有 settings 子 state
+- 每帧 `tray::poll_events()`，托盘“打开设置”只聚焦当前主窗口
+- 设置窗口关闭时隐藏到后台，托盘或 `xsay show` 可重新唤起
+- 透明置顶悬浮层使用第二 viewport：空闲时显示 96×34 `xsay` 角标，录音/识别/输入时切到 120×120 状态动画
 
 ---
 

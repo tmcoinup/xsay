@@ -9,8 +9,8 @@ use evdev::{Device, EventType, InputEvent, KeyCode as EvKey};
 use parking_lot::Mutex;
 use std::collections::HashSet;
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
     Arc,
+    atomic::{AtomicBool, Ordering},
 };
 
 pub fn is_wayland_session() -> bool {
@@ -37,9 +37,7 @@ pub fn spawn_hotkey_threads(
         .collect();
 
     if devices.is_empty() {
-        return Err(
-            "no accessible keyboard devices (add user to 'input' group)".to_string(),
-        );
+        return Err("no accessible keyboard devices (add user to 'input' group)".to_string());
     }
 
     // recording: logical "are we currently recording?" Different from the
@@ -73,22 +71,6 @@ pub fn spawn_hotkey_threads(
     Ok(n)
 }
 
-/// Per-iteration signal from handle_key back to run_device_loop. We used
-/// to distinguish Grab/Ungrab here so we could take exclusive access to
-/// the physical device and suppress the main hotkey key from reaching
-/// the focused app. That approach had a subtle race: every grab/ungrab
-/// pair gave the compositor a brief window during which held-key state
-/// could get "stuck", and a user who mashed the hotkey hard enough to
-/// rapid-cycle could end up with an unresponsive keyboard requiring
-/// logout/reboot.
-///
-/// Trading correctness for safety: we no longer grab. Letter-based
-/// hotkeys in hold mode leak characters (one initial character from the
-/// physical key-down that the compositor sees before we can react), but
-/// the kernel-level keyboard path stays clean and pristine. Users who
-/// need no-leak hotkeys should bind a system-level shortcut (e.g. GNOME
-/// Custom Shortcuts → `xsay toggle`) or use F-keys which don't produce
-/// text.
 enum PostKey {
     None,
 }
@@ -103,39 +85,27 @@ fn run_device_loop(
     held_keys: Arc<Mutex<HashSet<u16>>>,
 ) {
     // Exponential backoff for transient fetch_events errors. Common
-    // triggers: laptop suspend/resume (which releases the grab), USB
-    // keyboard re-enumeration, or the kernel buffer momentarily
-    // overflowing under heavy I/O. Breaking out of the loop the way we
-    // used to meant a single hiccup silently killed xsay's hotkey
-    // handling for the rest of the session ("按着按着快捷键就出不来
-    // 了"). A short sleep + retry keeps us alive across those events;
-    // if the device is genuinely gone we bail after enough failures.
+    // triggers: laptop suspend/resume, USB keyboard re-enumeration, or
+    // the kernel buffer momentarily overflowing under heavy I/O. Breaking
+    // out of the loop the way we used to meant a single hiccup silently
+    // killed xsay's hotkey handling for the rest of the session. A short
+    // sleep + retry keeps us alive across those events; if the device is
+    // genuinely gone we bail after enough failures.
     const MAX_CONSECUTIVE_ERRORS: u32 = 30;
     const BASE_BACKOFF_MS: u64 = 50;
     let mut consecutive_errors: u32 = 0;
 
     loop {
-        match device.fetch_events() {
+        let fetch_result: std::io::Result<Vec<InputEvent>> =
+            device.fetch_events().map(|events| events.collect());
+        let events: Vec<InputEvent> = match fetch_result {
             Ok(events) => {
                 consecutive_errors = 0;
-                for ev in events {
-                    if ev.event_type() == EventType::KEY {
-                        let PostKey::None = handle_key(
-                            &ev,
-                            &event_tx,
-                            &shared_config,
-                            &capture_active,
-                            &capture_slot,
-                            &recording,
-                            &held_keys,
-                        );
-                    }
-                }
+                events
             }
             Err(e) => {
                 consecutive_errors += 1;
-                let backoff =
-                    BASE_BACKOFF_MS * (1u64 << consecutive_errors.min(8));
+                let backoff = BASE_BACKOFF_MS * (1u64 << consecutive_errors.min(8));
                 log::warn!(
                     "evdev fetch_events error #{}: {} — sleeping {}ms and retrying",
                     consecutive_errors,
@@ -150,6 +120,21 @@ fn run_device_loop(
                     break;
                 }
                 std::thread::sleep(std::time::Duration::from_millis(backoff));
+                continue;
+            }
+        };
+
+        for ev in events {
+            if ev.event_type() == EventType::KEY {
+                let PostKey::None = handle_key(
+                    &ev,
+                    &event_tx,
+                    &shared_config,
+                    &capture_active,
+                    &capture_slot,
+                    &recording,
+                    &held_keys,
+                );
             }
         }
     }
@@ -194,6 +179,10 @@ fn handle_key(
     }
 
     let cfg = shared_config.lock().clone();
+    if !cfg.internal_listener {
+        return PostKey::None;
+    }
+
     let target = key_name_to_evdev(&cfg.key);
     let is_toggle = cfg.mode == "toggle";
     let mods_ok = cfg.modifiers.iter().all(|m| {
@@ -359,11 +348,7 @@ fn evdev_code_to_name(code: u16) -> Option<&'static str> {
     })
 }
 
-fn record_capture_evdev(
-    code: u16,
-    held_keys: &Arc<Mutex<HashSet<u16>>>,
-    slot: &Arc<CaptureSlot>,
-) {
+fn record_capture_evdev(code: u16, held_keys: &Arc<Mutex<HashSet<u16>>>, slot: &Arc<CaptureSlot>) {
     // Ignore bare modifier presses.
     let mods_codes = [
         EvKey::KEY_LEFTCTRL.code(),

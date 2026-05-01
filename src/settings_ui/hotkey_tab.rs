@@ -105,11 +105,13 @@ fn save_hotkey_now(state: &mut SettingsState) {
         hk.key = state.hotkey_key.clone();
         hk.modifiers = state.hotkey_mods.clone();
         hk.mode = state.hotkey_mode.clone();
+        hk.internal_listener = state.hotkey_internal_listener;
     }
     if let Ok(mut cfg) = Config::load() {
         cfg.hotkey.key = state.hotkey_key.clone();
         cfg.hotkey.modifiers = state.hotkey_mods.clone();
         cfg.hotkey.mode = state.hotkey_mode.clone();
+        cfg.hotkey.internal_listener = state.hotkey_internal_listener;
         if let Ok(path) = Config::config_path() {
             if let Ok(text) = toml::to_string_pretty(&cfg) {
                 let _ = std::fs::write(path, text);
@@ -139,6 +141,7 @@ pub fn render(ui: &mut egui::Ui, state: &mut SettingsState) {
         // Unix-only — it relies on the IPC module, which uses Unix sockets.
         #[cfg(unix)]
         render_external_trigger_card(ui, state);
+        render_internal_listener_card(ui, state);
         render_current_card(ui, state);
         render_capture_card(ui, state);
         render_mode_card(ui, state);
@@ -151,6 +154,42 @@ pub fn render(ui: &mut egui::Ui, state: &mut SettingsState) {
                     .size(crate::theme::FONT_SM),
             );
         }
+    });
+}
+
+fn render_internal_listener_card(ui: &mut egui::Ui, state: &mut SettingsState) {
+    theme::section_card(ui, "内置键盘监听", |ui| {
+        ui.horizontal(|ui| {
+            if theme::checkbox(
+                ui,
+                state.hotkey_internal_listener,
+                crate::theme::WARNING,
+            )
+            .clicked()
+            {
+                state.hotkey_internal_listener = !state.hotkey_internal_listener;
+                save_hotkey_now(state);
+            }
+            ui.add_space(2.0);
+            ui.vertical(|ui| {
+                ui.label(
+                    egui::RichText::new(if state.hotkey_internal_listener {
+                        "已启用（重启 xsay 后生效）"
+                    } else {
+                        "已关闭（推荐）"
+                    })
+                    .color(crate::theme::TEXT_PRIMARY)
+                    .size(crate::theme::FONT_BODY),
+                );
+                ui.label(
+                    egui::RichText::new(
+                        "关闭后 xsay 不读取 /dev/input，不会拦截键盘，也不会把 Z 输入到中文输入法；请使用上面的系统快捷键命令触发。",
+                    )
+                    .color(crate::theme::TEXT_SECONDARY)
+                    .size(crate::theme::FONT_SM),
+                );
+            });
+        });
     });
 }
 
@@ -173,10 +212,14 @@ fn render_external_trigger_card(ui: &mut egui::Ui, state: &mut SettingsState) {
         );
         ui.add_space(6.0);
 
-        let exe = std::env::current_exe()
-            .ok()
-            .map(|p| p.display().to_string())
-            .unwrap_or_else(|| "xsay".to_string());
+        let exe = if std::path::Path::new("/usr/bin/xsay").exists() {
+            "/usr/bin/xsay".to_string()
+        } else {
+            std::env::current_exe()
+                .ok()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "xsay".to_string())
+        };
         let command = format!("{} toggle", exe);
 
         // Command pill with a copy action on the right. Monospace so the
@@ -196,8 +239,7 @@ fn render_external_trigger_card(ui: &mut egui::Ui, state: &mut SettingsState) {
                             .size(crate::theme::FONT_SM),
                     );
                 });
-            if theme::icon_link_button(ui, Icon::Check, "复制命令", crate::theme::ACCENT)
-                .clicked()
+            if theme::icon_link_button(ui, Icon::Check, "复制命令", crate::theme::ACCENT).clicked()
             {
                 ui.ctx().copy_text(command.clone());
                 state.set_status("命令已复制到剪贴板", crate::theme::SUCCESS);
@@ -218,8 +260,7 @@ fn render_current_card(ui: &mut egui::Ui, state: &SettingsState) {
     theme::section_card(ui, "当前快捷键", |ui| {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 8.0;
-            let mut parts: Vec<String> =
-                state.hotkey_mods.iter().map(|m| pretty_mod(m)).collect();
+            let mut parts: Vec<String> = state.hotkey_mods.iter().map(|m| pretty_mod(m)).collect();
             parts.push(pretty_key(&state.hotkey_key));
             for (i, part) in parts.iter().enumerate() {
                 if i > 0 {
@@ -233,10 +274,12 @@ fn render_current_card(ui: &mut egui::Ui, state: &SettingsState) {
             }
         });
 
-        let mode_hint = if state.hotkey_mode == "toggle" {
-            "点按切换：按一次开始录音，再按一次结束并输入。停顿 1.5 秒自动识别。"
+        let mode_hint = if !state.hotkey_internal_listener {
+            "系统快捷键方式：把上面的命令绑定到 Super+Z；按一次开始录音，再按一次结束并输入。停顿 1.5 秒也会自动识别。"
+        } else if state.hotkey_mode == "toggle" {
+            "内置监听：点按切换，按一次开始录音，再按一次结束并输入。停顿 1.5 秒自动识别。"
         } else {
-            "按住说话：按住快捷键录音，松开转写输入。停顿 1.5 秒自动识别。"
+            "内置监听：按住快捷键录音，松开转写输入。停顿 1.5 秒自动识别。"
         };
         theme::helper_text(ui, mode_hint);
     });
@@ -254,11 +297,8 @@ fn key_chip(ui: &mut egui::Ui, text: &str) {
     let pad_y = 5.0;
     let total = egui::vec2(pad_x * 2.0 + text_size.x, pad_y * 2.0 + text_size.y);
     let (rect, _) = ui.allocate_exact_size(total, egui::Sense::hover());
-    ui.painter().rect_filled(
-        rect,
-        crate::theme::radius_sm(),
-        crate::theme::BG_CARD_HOVER,
-    );
+    ui.painter()
+        .rect_filled(rect, crate::theme::radius_sm(), crate::theme::BG_CARD_HOVER);
     ui.painter().rect_stroke(
         rect,
         crate::theme::radius_sm(),
@@ -316,10 +356,13 @@ fn render_capture_card(ui: &mut egui::Ui, state: &mut SettingsState) {
         if state.capturing {
             theme::helper_text(
                 ui,
-                "支持 F1–F12、Home/End/PageUp/PageDown、字母键等。按 Esc 取消。",
+                "支持 F1–F12、Home/End/PageUp/PageDown、字母键等。按 Esc 取消。关闭内置监听时，仅捕获设置窗口收到的按键。",
             );
         } else {
-            theme::helper_text(ui, "按下后捕获任意组合键，会自动保存。");
+            theme::helper_text(
+                ui,
+                "按下后捕获任意组合键，会自动保存；系统快捷键仍需在系统设置里绑定。",
+            );
         }
 
         // Wayland + rdev fallback silently drops Super key presses. Warn in
@@ -443,6 +486,18 @@ fn render_backend_warning(ui: &mut egui::Ui, state: &SettingsState) {
     };
 
     match backend {
+        Backend::SystemShortcutOnly => {
+            banner(
+                ui,
+                crate::theme::BG_CARD,
+                Icon::Check,
+                crate::theme::SUCCESS,
+                "当前使用系统快捷键方式，内置键盘监听未启动。",
+                Some(
+                    "推荐在 GNOME 自定义快捷键中绑定 /usr/bin/xsay toggle；这种方式不会产生多余的 Z，也不会读取 /dev/input。",
+                ),
+            );
+        }
         Backend::RdevX11 => {
             // No banner — everything works.
         }

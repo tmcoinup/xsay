@@ -228,10 +228,7 @@ pub fn draw_icon(painter: &Painter, rect: Rect, icon: Icon, color: egui::Color32
                 color,
             );
             painter.rect_filled(
-                Rect::from_min_size(
-                    egui::pos2(c.x + gap / 2.0, y_top),
-                    egui::vec2(bar_w, bar_h),
-                ),
+                Rect::from_min_size(egui::pos2(c.x + gap / 2.0, y_top), egui::vec2(bar_w, bar_h)),
                 CornerRadius::same(1),
                 color,
             );
@@ -495,7 +492,11 @@ pub fn outlined_button(
     } else {
         TEXT_DISABLED
     };
-    let text_color = if hovered { brighten(color, 1.15) } else { color };
+    let text_color = if hovered {
+        brighten(color, 1.15)
+    } else {
+        color
+    };
 
     ui.painter().rect_filled(rect, radius_md(), bg);
     ui.painter().rect_stroke(
@@ -580,8 +581,12 @@ pub fn checkbox(ui: &mut Ui, checked: bool, color: egui::Color32) -> Response {
         ui.painter().line_segment([p1, p2], stroke);
         ui.painter().line_segment([p2, p3], stroke);
     } else {
-        ui.painter()
-            .rect_stroke(r, CornerRadius::same(3), Stroke::new(1.5, frame_color), StrokeKind::Middle);
+        ui.painter().rect_stroke(
+            r,
+            CornerRadius::same(3),
+            Stroke::new(1.5, frame_color),
+            StrokeKind::Middle,
+        );
     }
     response
 }
@@ -589,11 +594,7 @@ pub fn checkbox(ui: &mut Ui, checked: bool, color: egui::Color32) -> Response {
 /// Card container matching the Figma section style: BG_CARD background,
 /// radius_lg corners, generous inner margin. Title rendered on its own row;
 /// body receives a Ui with `set_min_width(available_width)` already applied.
-pub fn section_card<R>(
-    ui: &mut Ui,
-    title: &str,
-    add_contents: impl FnOnce(&mut Ui) -> R,
-) -> R {
+pub fn section_card<R>(ui: &mut Ui, title: &str, add_contents: impl FnOnce(&mut Ui) -> R) -> R {
     let mut inner: Option<R> = None;
     egui::Frame::new()
         .fill(BG_CARD)
@@ -616,11 +617,7 @@ pub fn section_card<R>(
 /// A "form row" — label on the left in TEXT_SECONDARY, control on the right,
 /// baseline aligned. Used by the General and Hotkey tabs so every row reads
 /// the same height and color.
-pub fn form_row<R>(
-    ui: &mut Ui,
-    label: &str,
-    add_contents: impl FnOnce(&mut Ui) -> R,
-) -> R {
+pub fn form_row<R>(ui: &mut Ui, label: &str, add_contents: impl FnOnce(&mut Ui) -> R) -> R {
     let mut inner: Option<R> = None;
     ui.horizontal(|ui| {
         ui.set_min_width(ui.available_width());

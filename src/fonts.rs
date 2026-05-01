@@ -46,11 +46,7 @@ pub fn install(ctx: &egui::Context) {
     }
 
     ctx.set_fonts(fonts);
-    log::info!(
-        "Loaded CJK font: {} (index {})",
-        path.display(),
-        index
-    );
+    log::info!("Loaded CJK font: {} (index {})", path.display(), index);
 }
 
 /// Returns (path, ttc_face_index). Face index is 0 for .ttf/.otf, or a specific
@@ -126,7 +122,7 @@ fn find_system_cjk_font() -> Option<(PathBuf, u32)> {
     let windir = std::env::var_os("WINDIR")?;
     let fonts_dir = Path::new(&windir).join("Fonts");
     let candidates: &[(&str, u32)] = &[
-        ("msyh.ttc", 0),   // Microsoft YaHei
+        ("msyh.ttc", 0), // Microsoft YaHei
         ("msyh.ttf", 0),
         ("simsun.ttc", 0), // SimSun
         ("simsun.ttf", 0),

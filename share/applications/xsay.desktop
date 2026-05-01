@@ -10,4 +10,5 @@ Terminal=false
 Categories=Utility;Office;AudioVideo;
 Keywords=voice;speech;dictation;whisper;transcribe;语音;听写;
 StartupNotify=false
+StartupWMClass=xsay
 X-GNOME-UsesNotifications=true

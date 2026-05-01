@@ -1,20 +1,49 @@
 use tray_icon::{
-    menu::{Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem},
     Icon, TrayIcon, TrayIconBuilder,
+    menu::{Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem},
 };
+
+use std::sync::{LazyLock, Mutex, OnceLock, mpsc};
 
 const ID_SHOW_SETTINGS: &str = "xsay.show_settings";
 const ID_QUIT: &str = "xsay.quit";
 
 pub enum TrayAction {
     ShowSettings,
-    Quit,
 }
 
 /// Holds the tray so it stays alive; drop this to remove the icon.
 pub struct TrayHandle {
     #[allow(dead_code)]
     tray: TrayIcon,
+}
+
+static ACTIONS: LazyLock<(mpsc::Sender<TrayAction>, Mutex<mpsc::Receiver<TrayAction>>)> =
+    LazyLock::new(|| {
+        let (tx, rx) = mpsc::channel();
+        (tx, Mutex::new(rx))
+    });
+
+fn start_event_dispatcher() {
+    static STARTED: OnceLock<()> = OnceLock::new();
+    STARTED.get_or_init(|| {
+        let tx = ACTIONS.0.clone();
+        std::thread::spawn(move || {
+            while let Ok(ev) = MenuEvent::receiver().recv() {
+                let id = ev.id.as_ref();
+                if id == ID_SHOW_SETTINGS {
+                    let _ = tx.send(TrayAction::ShowSettings);
+                } else if id == ID_QUIT {
+                    log::info!("Tray quit requested");
+                    std::process::exit(0);
+                }
+            }
+        });
+    });
+}
+
+pub fn request_show_settings() {
+    let _ = ACTIONS.0.send(TrayAction::ShowSettings);
 }
 
 /// Spawn the tray on a dedicated GTK thread (Linux requirement).
@@ -38,6 +67,7 @@ pub fn spawn_in_background() {
             }
         };
         log::info!("Tray icon ready");
+        start_event_dispatcher();
         // Run the GTK main loop so menu clicks get dispatched.
         // This blocks the thread until the process exits.
         gtk::main();
@@ -50,6 +80,7 @@ pub fn spawn_in_background() {
     std::thread::spawn(|| match build_inner() {
         Ok(_handle) => {
             log::info!("Tray icon ready");
+            start_event_dispatcher();
             // Keep the thread alive so the handle is not dropped.
             loop {
                 std::thread::sleep(std::time::Duration::from_secs(60));
@@ -61,12 +92,7 @@ pub fn spawn_in_background() {
 
 fn build_inner() -> Result<TrayHandle, String> {
     let menu = Menu::new();
-    let show_item = MenuItem::with_id(
-        MenuId::new(ID_SHOW_SETTINGS),
-        "⚙  打开设置",
-        true,
-        None,
-    );
+    let show_item = MenuItem::with_id(MenuId::new(ID_SHOW_SETTINGS), "⚙  打开设置", true, None);
     let quit_item = MenuItem::with_id(MenuId::new(ID_QUIT), "退出 xsay", true, None);
 
     menu.append(&show_item).map_err(|e| e.to_string())?;
@@ -89,13 +115,9 @@ fn build_inner() -> Result<TrayHandle, String> {
 /// Drain menu events; returns actions the app should take this frame.
 pub fn poll_events() -> Vec<TrayAction> {
     let mut actions = Vec::new();
-    while let Ok(ev) = MenuEvent::receiver().try_recv() {
-        let id = ev.id.as_ref();
-        if id == ID_SHOW_SETTINGS {
-            actions.push(TrayAction::ShowSettings);
-        } else if id == ID_QUIT {
-            actions.push(TrayAction::Quit);
-        }
+    let rx = ACTIONS.1.lock().expect("tray action receiver poisoned");
+    while let Ok(action) = rx.try_recv() {
+        actions.push(action);
     }
     actions
 }

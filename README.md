@@ -5,9 +5,8 @@
 <h1 align="center">xsay</h1>
 
 <p align="center">
-  <b>离线 AI 语音输入工具</b> · 按快捷键录音，松开自动识别，直接粘贴到光标处<br>
-  Offline voice-to-text for Linux / macOS / Windows. Hold a hotkey, speak,
-  release — the transcription types itself wherever your cursor is.
+  <b>中文优先的离线 AI 语音输入工具</b> · 按住 Super+Z 录音，自动识别并粘贴到光标处<br>
+  Offline Chinese-first voice-to-text for Linux / macOS / Windows.
 </p>
 
 <p align="center">
@@ -21,13 +20,13 @@
 ## 特性 · Features
 
 - **完全离线** — 所有模型本地推理，不联网、不上传任何音频
-- **两代 ASR 后端** — Whisper (whisper.cpp) + SenseVoice/Paraformer (sherpa-onnx)，设置里一键切换
+- **中文优先 ASR** — 只保留 SenseVoice Small / SenseVoice Small FP32 / Paraformer-zh 三个 sherpa-onnx 模型
 - **三种触发方式** — 按住说话（hold）/ 点按切换（toggle）/ 绑 GNOME 系统快捷键调用 `xsay toggle`
-- **中英日韩粤自动识别** — 句内混说（"这个 API 怎么 deploy"）也能正确分词
+- **中文/粤语/中英夹杂** — 默认固定中文，必要时可切自动检测或粤语
 - **幻觉过滤** — 识别静音直接返回空白；过滤 Whisper 训练数据里的"謝謝大家收看 / 字幕志愿者 XXX"和 SenseVoice 的"Okay./Yes./嗯。"填充词
 - **Wayland 友好** — evdev 直接读键盘、arboard 走原生剪贴板协议、uinput 级合成 Ctrl+V 自动粘贴，无需 ydotool daemon
 - **GPU 加速可选** — `--features cuda | vulkan | metal | hipblas`，按硬件选
-- **原生托盘 + 悬浮反馈** — 系统托盘常驻，识别时屏幕一角 120×120 动画话筒
+- **右上角常驻角标 + 原生托盘** — 桌面右上角小图标常驻，识别时放大为 120×120 动画话筒
 - **历史记录** — 所有识别结果保存在 `~/.cache/xsay/history.jsonl`
 
 ## 安装 · Install
@@ -43,29 +42,32 @@ chmod +x xsay-*
 
 | 二进制 | 系统 | GPU 加速 | 对谁合适 |
 |---|---|---|---|
-| **xsay-linux-x64-cpu** | Linux x64 | 无 | 通用首选，零依赖 |
+| **xsay-linux-x64-cpu** | Linux x64 | 无 | 通用首选 |
 | xsay-linux-x64-vulkan | Linux x64 | NVIDIA / AMD / Intel GPU | 有显卡、想跑大模型 |
 | xsay-macos-arm64-metal | macOS Apple Silicon | Apple GPU | M 系列 Mac |
 
-Linux 裸二进制运行时依赖（`apt install`）：`libc6 libstdc++6 libgcc-s1 libx11-6 libxtst6 libasound2 libgtk-3-0 libayatana-appindicator3-1 libxdo3`
+Linux 裸二进制运行时依赖（`apt install`）：`libc6 libstdc++6 libgcc-s1 libx11-6 libxtst6 libasound2 libgtk-3-0 libayatana-appindicator3-1 libxdo3`。GNOME 顶栏托盘还建议安装并启用 `gnome-shell-extension-appindicator`。
 
-### 或：用 .deb 包安装（运行库已随包携带）
+### 或：用 .deb 包安装
 
-下载 `xsay-linux-x64-<version>-1.deb` 后，可直接用 `dpkg` 离线安装：
-
-```bash
-sudo dpkg -i ./xsay-linux-x64-0.1.3-1.deb
-```
-
-也可以继续用 `apt` 安装本地包：
+下载 `xsay-linux-x64-<version>-1.deb` 后，推荐用 `apt` 安装本地包：
 
 ```bash
-sudo apt install ./xsay-linux-x64-0.1.3-1.deb
+sudo apt install ./xsay-linux-x64-*.deb
 ```
 
-`.deb` 包会把 xsay 的 GTK/X11/audio/xdo/Sherpa/ONNX Runtime 运行库一起
-安装到 `/usr/lib/xsay/`，因此也可以用 `sudo dpkg -i ./xsay_*.deb` 离线安装。
-不要只拷贝 `/usr/bin/xsay` 这个启动入口。
+如果这个 `.deb` 是打包前运行过 `./packaging/deb/vendor-runtime-libs.sh`
+生成的离线包，也可以直接用 `dpkg` 安装：
+
+```bash
+sudo dpkg -i ./xsay-linux-x64-*.deb
+```
+
+`.deb` 会声明 GTK/AppIndicator/X11/audio/xdo 等运行时依赖；推荐用
+`sudo apt install ./xsay_*.deb`，apt 会自动补齐，并默认安装 GNOME
+AppIndicator 推荐扩展。打包前运行
+`./packaging/deb/vendor-runtime-libs.sh` 时，也会把运行库随包放到
+`/usr/lib/xsay/`，方便离线安装。不要只拷贝 `/usr/bin/xsay` 这个启动入口。
 
 ### 或：从源码构建
 
@@ -80,13 +82,13 @@ sudo apt install ./xsay-linux-x64-0.1.3-1.deb
 
 2. **第一次运行自动打开设置窗口（或从托盘打开）**
    - **模型** 标签页：点击 `SenseVoice Small` 右边 **安装**，等下载完（约 230 MB）
-   - **快捷键** 标签页：点 **捕捉按键** → 按你想用的组合（如 F2 或 Super+Z）
+   - **快捷键** 标签页：默认 `Super+Z` 按住说话；也可点 **捕捉按键** 改成别的组合
    - **常规** 标签页：选择识别语言、粘贴快捷键等
 
 3. **说话**
-   - 按住（或按下切换）快捷键 → 屏幕底部出现 `● REC`
+   - 按住 Super+Z → 右上角小图标放大并显示 `● REC`
    - 说话
-   - 松开快捷键（或再按一次） → 文字自动粘贴到光标处
+   - 松开或停顿后自动识别 → 文字自动粘贴到光标处
 
 ### 给 GNOME/KDE 用户：绑系统快捷键更稳（推荐）
 
@@ -99,20 +101,7 @@ Wayland 下应用级按键捕获有限制。最可靠的是让**系统**派发�
 
 ## 模型选择 · Models
 
-xsay 支持两代 ASR 后端，可在设置 → 模型 里选择。切换后端**无需重启**。
-
-### Whisper (OpenAI) — 通用多语言
-
-| 模型 | 大小 | CPU 实时因子 | 备注 |
-|---|---|---|---|
-| Tiny | 75 MB | ~0.1x | 最快，精度差 |
-| **Base** | 147 MB | ~0.3x | 入门推荐 |
-| Small | 488 MB | ~1x | 中档 |
-| Medium | 1.5 GB | ~3x | 有 GPU 时推荐 |
-| Large v3 | 3.1 GB | ~10x | 必须 GPU |
-| **Large v3 Turbo** | 810 MB | ~1x | 精度接近 Large 但 4x 快 |
-
-### Sherpa ONNX — 中文强项
+xsay 当前面向中文输入服务，只在设置 → 模型 里提供三个 Sherpa ONNX 模型。切换后端**无需重启**。
 
 | 模型 | 大小 | 特点 |
 |---|---|---|
@@ -123,7 +112,7 @@ xsay 支持两代 ASR 后端，可在设置 → 模型 里选择。切换后端*
 选择建议：
 - 默认 **SenseVoice Small (int8)**：速度 + 精度最平衡
 - 纯中文写作 → **Paraformer-zh**：延迟低，标点好
-- 多语言混说 → **SenseVoice** 或 **Whisper Turbo**
+- 想减少量化损失 → **SenseVoice Small FP32**：内存更多，速度较慢
 
 ## Wayland 自动粘贴
 
@@ -153,7 +142,9 @@ sudo udevadm control --reload-rules && sudo modprobe uinput
 
 - **Ctrl+V**：普通编辑器 / 浏览器
 - **Ctrl+Shift+V**：终端（Claude Code CLI、Codex CLI、GNOME Terminal 等）
-- **两者都试**（默认）：先发 Ctrl+V 再发 Ctrl+Shift+V，最大兼容性
+- **两者都试**：先发 Ctrl+V 再发 Ctrl+Shift+V，最大兼容性
+
+默认使用 **Ctrl+Shift+V**，优先支持 Claude Code CLI、Codex CLI、GNOME Terminal 等终端输入。
 
 ## 配置文件 · Configuration
 
@@ -161,9 +152,9 @@ sudo udevadm control --reload-rules && sudo modprobe uinput
 
 ```toml
 [hotkey]
-key = "F2"                    # 按键名
-modifiers = []                # 修饰键，例如 ["ctrl", "shift"]
-mode = "hold"                 # "hold" 按住说话 / "toggle" 点按切换
+key = "z"                     # 按键名
+modifiers = ["super"]         # 修饰键，例如 ["ctrl", "shift"]
+mode = "hold"                 # 默认按住说话，松开后识别并输出
 
 [audio]
 silence_threshold = 0.01      # 静音检测阈值
@@ -171,24 +162,24 @@ silence_frames = 24           # 约 1.5 秒的静音触发识别
 max_record_seconds = 30       # 最长录音
 
 [model]
-hf_repo = "ggerganov/whisper.cpp"
-hf_filename = "ggml-base.bin" # 或 "sensevoice" 等子目录名
+hf_repo = "k2-fsa/sherpa-onnx"
+hf_filename = "sensevoice"    # sensevoice / sensevoice-fp32 / paraformer
 
 [transcription]
-language = "zh"               # "auto" / "zh" / "en" / "ja" / ...
+language = "zh"               # "zh" / "auto" / "yue"
 translate = false             # true = 强制输出英文
 n_threads = 4                 # CPU 推理线程数
-backend = "sensevoice"        # "whisper" / "sensevoice" / "paraformer"
+backend = "sensevoice"        # sensevoice / sensevoice-fp32 / paraformer
 
 [overlay]
-position = "bottom-center"    # top-left / top-center / top-right /
+position = "top-right"        # top-left / top-center / top-right /
                               # bottom-left / bottom-center / bottom-right / center
 opacity = 0.9
 
 [injection]
 method = "clipboard"          # "clipboard" (CJK 推荐) / "type"
-clipboard_delay_ms = 80
-paste_shortcut = "both"       # "ctrl-v" / "ctrl-shift-v" / "both"
+clipboard_delay_ms = 120
+paste_shortcut = "ctrl-shift-v" # "ctrl-v" / "ctrl-shift-v" / "both"
 ```
 
 ## CLI 参考
@@ -254,8 +245,8 @@ cargo install cargo-deb
 cargo build --release
 ./packaging/deb/vendor-runtime-libs.sh
 cargo deb --no-build
-# 可离线安装；运行库已随包放到 /usr/lib/xsay/
-sudo dpkg -i ./target/debian/xsay_0.1.3-1_amd64.deb
+# 在线安装推荐用 apt 自动补齐运行依赖
+sudo apt install ./target/debian/xsay_*.deb
 ```
 
 ## 打 Snap（可发布到 Snap Store / Ubuntu 软件中心）
@@ -288,7 +279,7 @@ snapcraft upload --release=edge ./xsay_*_amd64.snap
 | 症状 | 原因 / 解决 |
 |---|---|
 | 按快捷键没反应 | Wayland 下 rdev 看不到原生窗口；`sudo usermod -aG input $USER` 让 xsay 用 evdev |
-| 识别很慢 | 切换到 SenseVoice Small 或 Whisper Base；有 GPU 就 `--features vulkan` 重建 |
+| 识别很慢 | 优先使用 SenseVoice Small；Paraformer 冷启动较慢但预热后延迟低 |
 | 识别出奇怪的话（"謝謝大家收看"等）| 麦克风无信号时 Whisper 会瞎编；xsay 有 RMS 门和黑名单，但也可能漏。看日志 `grep "peak RMS" /tmp/xsay.log` 确认麦克是否在工作 |
 | 没自动粘贴 | 完成 [Wayland 自动粘贴](#wayland-自动粘贴) 的 udev 设置 + 注销重登 |
 | "`Unknown` is not responding" | 旧 bug（主浮层未真正显示）已修，升级到最新版 |

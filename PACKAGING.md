@@ -48,14 +48,23 @@ cargo install cargo-deb
 cargo build --release
 ./packaging/deb/vendor-runtime-libs.sh
 cargo deb --no-build
-sudo dpkg -i ./target/debian/xsay_0.1.3-1_amd64.deb
+sudo apt install ./target/debian/xsay_*.deb
 ```
 
-The generated .deb keeps only `libc6` in Debian `Depends` and bundles the
-GTK/X11/audio/xdo/Sherpa/ONNX runtime libraries under `/usr/lib/xsay/`.
-The `/usr/bin/xsay` launcher sets `LD_LIBRARY_PATH` to that private
-directory before starting the real binary, so `dpkg -i` does not need apt
-to resolve those packages first.
+The generated .deb declares the normal runtime packages in Debian `Depends`
+(`libgtk-3-0`, AppIndicator, X11, audio, xdo, etc.) so
+`sudo apt install ./target/debian/xsay_*.deb` can resolve them automatically.
+It also recommends `gnome-shell-extension-appindicator` because GNOME needs
+that shell extension before AppIndicator/status icons appear in the top bar.
+For machines without network access, `vendor-runtime-libs.sh` also bundles
+the resolved GTK/X11/audio/xdo/Sherpa/ONNX runtime libraries under
+`/usr/lib/xsay/`. The `/usr/bin/xsay` launcher sets `LD_LIBRARY_PATH` to that
+private directory before starting the real binary.
+
+Build-only packages such as `build-essential`, `cmake`, `pkg-config`,
+`libgtk-3-dev`, `libxtst-dev`, `libasound2-dev` and `libclang-dev` are
+intentionally not package dependencies; they are only needed when compiling
+xsay from source.
 
 For a Launchpad PPA workflow:
 

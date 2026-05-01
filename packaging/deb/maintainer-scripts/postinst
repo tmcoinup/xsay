@@ -1,0 +1,18 @@
+#!/bin/sh
+set -e
+
+if command -v modprobe >/dev/null 2>&1; then
+    modprobe uinput >/dev/null 2>&1 || true
+fi
+
+if command -v udevadm >/dev/null 2>&1; then
+    udevadm control --reload-rules >/dev/null 2>&1 || true
+    udevadm trigger --subsystem-match=misc >/dev/null 2>&1 || true
+fi
+
+if [ -e /dev/uinput ] && getent group input >/dev/null 2>&1; then
+    chgrp input /dev/uinput >/dev/null 2>&1 || true
+    chmod 0660 /dev/uinput >/dev/null 2>&1 || true
+fi
+
+exit 0

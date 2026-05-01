@@ -121,13 +121,18 @@ pub fn run_audio_thread(
         }
     };
 
-    // Keep stream active but paused until recording starts
-    if let Err(e) = stream.pause() {
-        log::warn!("Could not pause stream initially: {}", e);
+    // Keep the stream warm. Starting a CPAL stream on the hotkey press can
+    // drop the first 100-300ms of speech on PulseAudio/PipeWire; instead we
+    // continuously drain into a tiny pre-roll buffer and prepend it when the
+    // user starts recording.
+    if let Err(e) = stream.play() {
+        log::error!("Could not start audio input stream: {}", e);
+        return;
     }
 
     let mut recording = false;
     let mut accumulator: Vec<f32> = Vec::new();
+    let mut pre_roll: Vec<f32> = Vec::with_capacity(PREROLL_SAMPLES);
     let mut silent_chunks: u32 = 0;
     let mut recording_start = std::time::Instant::now();
     // Peak RMS observed during the current recording session. Printed on
@@ -142,18 +147,18 @@ pub fn run_audio_thread(
             match cmd {
                 AudioCmd::StartRecording => {
                     accumulator.clear();
+                    let pre_roll_len = pre_roll.len();
+                    let pre_roll_peak = rms(&pre_roll);
+                    accumulator.extend_from_slice(&pre_roll);
+                    pre_roll.clear();
                     silent_chunks = 0;
-                    peak_rms = 0.0;
+                    peak_rms = pre_roll_peak;
                     recording = true;
                     recording_start = std::time::Instant::now();
-                    if let Err(e) = stream.play() {
-                        log::error!("Could not start audio stream: {}", e);
-                    }
-                    log::debug!("Recording started");
+                    log::debug!("Recording started with {} pre-roll samples", pre_roll_len);
                 }
                 AudioCmd::StopRecording => {
                     recording = false;
-                    let _ = stream.pause();
                     log::info!(
                         "Recording stopped: {} samples, peak RMS {:.4} ({})",
                         accumulator.len(),
@@ -180,7 +185,6 @@ pub fn run_audio_thread(
                 }
                 AudioCmd::Abort => {
                     recording = false;
-                    let _ = stream.pause();
                     accumulator.clear();
                     silent_chunks = 0;
                     log::debug!("Recording aborted");
@@ -189,8 +193,11 @@ pub fn run_audio_thread(
         }
 
         if !recording {
-            // Drain raw_rx so buffer doesn't fill up
-            while raw_rx.try_recv().is_ok() {}
+            while let Ok(raw) = raw_rx.try_recv() {
+                let mono = mix_to_mono(&raw, channels);
+                let resampled = resample_to_16k(&mono, device_sample_rate);
+                append_pre_roll(&mut pre_roll, &resampled);
+            }
             std::thread::sleep(std::time::Duration::from_millis(20));
             continue;
         }
@@ -202,7 +209,6 @@ pub fn run_audio_thread(
         if recording_start.elapsed().as_secs() >= cfg.max_record_seconds as u64 {
             log::debug!("Max duration reached, stopping recording");
             recording = false;
-            let _ = stream.pause();
             let samples = std::mem::take(&mut accumulator);
             let _ = chunk_tx.send(AudioChunk {
                 samples,
@@ -256,6 +262,17 @@ pub fn run_audio_thread(
     }
 }
 
+const PREROLL_SAMPLES: usize = 8_000;
+
+fn append_pre_roll(buffer: &mut Vec<f32>, samples: &[f32]) {
+    buffer.extend_from_slice(samples);
+    if buffer.len() <= PREROLL_SAMPLES {
+        return;
+    }
+    let extra = buffer.len() - PREROLL_SAMPLES;
+    buffer.drain(..extra);
+}
+
 fn mix_to_mono(samples: &[f32], channels: usize) -> Vec<f32> {
     if channels == 1 {
         return samples.to_vec();
@@ -303,7 +320,7 @@ fn rms_hint(peak: f32) -> &'static str {
     if peak < 0.002 {
         "几乎无信号 — 麦克风可能未工作或选错设备"
     } else if peak < 0.01 {
-        "极弱 — 低于静音阈值，Whisper 会输出空白"
+        "极弱 — 低于静音阈值，识别会输出空白"
     } else if peak < 0.03 {
         "偏弱 — 靠近麦克风或提高增益"
     } else {

@@ -12,41 +12,43 @@ mod inject;
 #[cfg(unix)]
 mod ipc;
 mod model;
+mod model_catalog;
 mod overlay;
 #[cfg(any(feature = "sensevoice", feature = "sensevoice-cuda"))]
 mod sensevoice;
 mod settings_ui;
+mod speech_quality;
 mod state;
 mod theme;
 mod transcribe;
 mod tray;
 
-use audio::{AudioCmd, AudioChunk};
+use audio::{AudioChunk, AudioCmd};
 use config::Config;
 use crossbeam_channel::select;
 use hotkey::AppEvent;
 use inject::InjectCmd;
 use parking_lot::Mutex;
 use state::{AppState, SharedState, new_shared_state};
-use std::sync::{
-    atomic::{AtomicBool},
-    Arc,
-};
+use std::sync::{Arc, atomic::AtomicBool};
 use std::time::Instant;
 use transcribe::{TranscribeReq, TranscriptSeg};
 
 fn main() -> anyhow::Result<()> {
-    env_logger::Builder::from_env(
-        env_logger::Env::default().default_filter_or("xsay=info,warn"),
-    )
-    .init();
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("xsay=info,warn"))
+        .init();
 
     let args: Vec<String> = std::env::args().collect();
     let cmd = args.get(1).map(|s| s.as_str()).unwrap_or("");
+    let start_hidden = matches!(cmd, "--background" | "--daemon");
 
     match cmd {
         "--help" | "-h" => {
             print_help();
+            return Ok(());
+        }
+        "--version" | "-V" => {
+            println!("xsay {}", env!("CARGO_PKG_VERSION"));
             return Ok(());
         }
         "--config" => {
@@ -70,17 +72,46 @@ fn main() -> anyhow::Result<()> {
         // `xsay toggle` in GNOME Custom Shortcuts). Unix-only — Windows
         // doesn't have std::os::unix::net and wouldn't compile the module.
         #[cfg(unix)]
-        "toggle" | "cancel" => {
+        "toggle" | "cancel" | "show" | "ping" => {
             if let Err(e) = ipc::send_command(cmd) {
                 eprintln!("{}", e);
                 std::process::exit(1);
             }
             return Ok(());
         }
+        "--background" | "--daemon" => {}
         _ => {}
     }
 
     // Wayland + X11 backends are both handled below; evdev is preferred on Wayland.
+
+    #[cfg(unix)]
+    if ipc::socket_path().exists()
+        && ipc::send_command(if start_hidden { "ping" } else { "show" }).is_ok()
+    {
+        if start_hidden {
+            eprintln!("xsay 已在运行。");
+        } else {
+            eprintln!("xsay 已在运行，已唤醒现有窗口。");
+        }
+        return Ok(());
+    }
+
+    #[cfg(unix)]
+    let _instance_guard = match ipc::acquire_instance_lock().map_err(anyhow::Error::msg)? {
+        Some(guard) => guard,
+        None => {
+            let cmd = if start_hidden { "ping" } else { "show" };
+            if let Err(e) = ipc::send_command(cmd) {
+                eprintln!("xsay 已在运行，但唤醒窗口失败：{}", e);
+            } else if start_hidden {
+                eprintln!("xsay 已在运行。");
+            } else {
+                eprintln!("xsay 已在运行，已唤醒现有窗口。");
+            }
+            return Ok(());
+        }
+    };
 
     let cfg = Config::load()?;
     log::info!("Config loaded. Hotkey: {}", cfg.hotkey.key);
@@ -90,7 +121,7 @@ fn main() -> anyhow::Result<()> {
         Some(p) => log::info!("Model ready: {}", p.display()),
         None => {
             log::info!("No model available at startup.");
-            eprintln!("提示：当前没有可用模型，请点击右上角 xsay 图标打开设置下载。");
+            eprintln!("提示：当前没有可用模型，请点击右上角 xsay 常驻小图标打开设置下载。");
         }
     }
 
@@ -115,10 +146,11 @@ fn main() -> anyhow::Result<()> {
     let (transcript_tx, transcript_rx) = crossbeam_channel::unbounded::<TranscriptSeg>();
     let (inject_tx, inject_rx) = crossbeam_channel::unbounded::<InjectCmd>();
     let (inject_done_tx, inject_done_rx) = crossbeam_channel::unbounded::<()>();
-    let (model_reload_tx, model_reload_rx) =
-        crossbeam_channel::unbounded::<std::path::PathBuf>();
+    let (model_reload_tx, model_reload_rx) = crossbeam_channel::unbounded::<std::path::PathBuf>();
 
-    // Prefer evdev on Wayland, fall back to rdev (X11) on X11 or if evdev fails
+    // Stable default: use desktop custom shortcuts (`xsay toggle`) instead of
+    // an in-process keyboard listener. The internal listener can still be
+    // enabled from config for users who explicitly want rdev/evdev behavior.
     let hotkey_backend = spawn_hotkey_backend(
         hotkey_tx.clone(),
         Arc::clone(&shared_hotkey),
@@ -158,6 +190,10 @@ fn main() -> anyhow::Result<()> {
         std::thread::spawn(move || inject::run_inject_thread(inject_rx, inject_done_tx, inj));
     }
 
+    // Create the Linux uinput keyboard early so the first transcription does
+    // not race virtual-device enumeration when it tries to paste.
+    inject::warmup_synthetic_keyboard();
+
     // Coordinator on a dedicated thread (main thread is reserved for eframe/GUI)
     {
         let coord_state = Arc::clone(&shared_state);
@@ -180,42 +216,27 @@ fn main() -> anyhow::Result<()> {
     // Tray icon runs on its own GTK thread (Linux) / spawned thread (other OS).
     tray::spawn_in_background();
 
-    eprintln!(
-        "xsay running. Hold {} to record, release to transcribe, Escape to cancel.",
-        cfg.hotkey.key
-    );
-
-    // Overlay on main thread (required by macOS and Windows)
-    let mut native_options = overlay::build_native_options(&cfg.overlay);
-
-    // On Linux + Wayland, GNOME/mutter silently ignores the Wayland protocol
-    // extensions we rely on for positioning a transparent always-on-top
-    // overlay — the feedback widget lands wherever the compositor decides
-    // (usually top-left) instead of the configured corner. Force the GUI
-    // event loop onto X11 so OuterPosition commands actually take effect.
-    // Other subsystems (evdev, arboard, notify-send, the injection path)
-    // keep reading WAYLAND_DISPLAY and run on their native Wayland code
-    // paths — only eframe's window system is forced to XWayland.
-    //
-    // Override with `XSAY_GUI=wayland` for users on wlroots compositors
-    // where OuterPosition actually works.
-    #[cfg(target_os = "linux")]
-    {
-        use winit::platform::x11::EventLoopBuilderExtX11;
-        let force_wayland = std::env::var("XSAY_GUI")
-            .map(|v| v == "wayland")
-            .unwrap_or(false);
-        if !force_wayland {
-            native_options.event_loop_builder =
-                Some(Box::new(|builder| {
-                    builder.with_x11();
-                }));
-            log::info!(
-                "GUI: forcing X11 (XWayland) for accurate overlay positioning. \
-                 Override with XSAY_GUI=wayland."
-            );
-        }
+    if cfg.hotkey.internal_listener {
+        let hotkey_label = format_hotkey_label(&cfg.hotkey);
+        eprintln!(
+            "xsay running. {} {}, Escape to cancel.",
+            if cfg.hotkey.mode == "toggle" {
+                "Press"
+            } else {
+                "Hold"
+            },
+            hotkey_label
+        );
+    } else {
+        eprintln!(
+            "xsay running. Bind your desktop shortcut to `/usr/bin/xsay toggle` (recommended)."
+        );
     }
+
+    // GUI on main thread. Use the platform default backend; the old XWayland
+    // forced path was only needed for the transparent floating overlay and was
+    // implicated in desktop hangs on GNOME.
+    let native_options = overlay::build_native_options(&cfg.overlay, !start_hidden);
 
     eframe::run_native(
         "xsay",
@@ -286,7 +307,9 @@ fn handle_hotkey_event(
         AppEvent::HotkeyPressed => {
             let mut state = shared_state.lock();
             if matches!(*state, AppState::Idle) {
-                *state = AppState::Recording { started_at: Instant::now() };
+                *state = AppState::Recording {
+                    started_at: Instant::now(),
+                };
                 drop(state);
                 let _ = audio_cmd_tx.send(AudioCmd::StartRecording);
                 log::debug!("State → Recording");
@@ -429,6 +452,12 @@ fn spawn_hotkey_backend(
     capture_slot: Arc<hotkey::CaptureSlot>,
     backend_info: Arc<hotkey::BackendInfo>,
 ) -> &'static str {
+    if !shared_hotkey.lock().internal_listener {
+        *backend_info.backend.lock() = Some(hotkey::Backend::SystemShortcutOnly);
+        log::info!("Internal keyboard listener disabled; using IPC custom-shortcut mode");
+        return "system shortcut IPC";
+    }
+
     #[cfg(target_os = "linux")]
     let mut evdev_error: Option<String> = None;
 
@@ -491,15 +520,20 @@ fn print_help() {
     println!("  xsay [OPTIONS]");
     println!();
     println!("OPTIONS:");
-    println!("  (no args)          Start xsay (hold hotkey to record)");
+    println!("  (no args)          Start xsay daemon and settings window");
+    println!("  --background       Start xsay hidden for autostart");
     #[cfg(unix)]
     {
-        println!("  toggle             Toggle recording on the running daemon (for custom shortcuts)");
+        println!(
+            "  toggle             Toggle recording on the running daemon (for custom shortcuts)"
+        );
         println!("  cancel             Abort an in-flight session on the running daemon");
+        println!("  show               Show the running daemon's settings window");
     }
-    println!("  --download-model   Download the Whisper model and exit");
+    println!("  --download-model   Download the configured Chinese ONNX model and exit");
     println!("  --list-devices     List available audio input devices");
     println!("  --config           Print config file path");
+    println!("  --version          Print xsay version");
     println!("  --help             Show this help");
     println!();
     println!("CONFIG:");
@@ -508,7 +542,28 @@ fn print_help() {
     {
         println!();
         println!("CUSTOM SHORTCUTS (推荐):");
-        println!("  GNOME: Settings → Keyboard → Custom Shortcuts, 命令填 `xsay toggle`");
+        println!("  GNOME: Settings → Keyboard → Custom Shortcuts, 命令填 `/usr/bin/xsay toggle`");
         println!("  绑定任意组合键（Super+Z 等），由系统派发，跨 X11/Wayland 都可用。");
     }
+}
+
+fn format_hotkey_label(hotkey: &config::HotkeyConfig) -> String {
+    let mut parts: Vec<String> = hotkey
+        .modifiers
+        .iter()
+        .map(|m| match m.as_str() {
+            "ctrl" => "Ctrl".to_string(),
+            "alt" => "Alt".to_string(),
+            "shift" => "Shift".to_string(),
+            "super" | "meta" => "Super".to_string(),
+            other => other.to_string(),
+        })
+        .collect();
+    let key = if hotkey.key.chars().count() == 1 {
+        hotkey.key.to_uppercase()
+    } else {
+        hotkey.key.clone()
+    };
+    parts.push(key);
+    parts.join("+")
 }

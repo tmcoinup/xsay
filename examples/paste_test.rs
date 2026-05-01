@@ -28,7 +28,7 @@ fn main() {
     keys.insert(evdev::KeyCode::KEY_LEFTCTRL);
     keys.insert(evdev::KeyCode::KEY_LEFTSHIFT);
     keys.insert(evdev::KeyCode::KEY_V);
-    let mut dev = evdev::uinput::VirtualDeviceBuilder::new()
+    let mut dev = evdev::uinput::VirtualDevice::builder()
         .expect("uinput open")
         .name("xsay-paste-test")
         .with_keys(&keys)
