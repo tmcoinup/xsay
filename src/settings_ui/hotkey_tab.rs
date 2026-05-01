@@ -365,19 +365,19 @@ fn render_capture_card(ui: &mut egui::Ui, state: &mut SettingsState) {
             );
         }
 
-        // Wayland + rdev fallback silently drops Super key presses. Warn in
-        // the capture card itself so users don't wonder why Super+Z produces
-        // only "Z" — the banner at the top of the tab is easy to miss when
-        // they're focused on the button.
+        // If the internal listener couldn't start (no input-group access),
+        // surface a per-card hint too — the banner at the top of the tab
+        // is easy to miss when the user is focused on the capture button.
         if matches!(
             state.backend_info.backend.lock().clone(),
-            Some(crate::hotkey::Backend::RdevWaylandFallback { .. })
+            Some(crate::hotkey::Backend::EvdevUnavailable { .. })
         ) {
             ui.add_space(2.0);
             ui.label(
                 egui::RichText::new(
-                    "⚠ 当前 Wayland 回退后端无法捕获 Super 键。执行 \
-                     sudo usermod -aG input $USER 并重新登录后即可使用 Super 组合。",
+                    "⚠ 内置键盘监听当前不可用。执行 \
+                     sudo usermod -aG input $USER 后注销重登；\
+                     不想加组就改用 GNOME 自定义快捷键绑定 xsay toggle。",
                 )
                 .color(crate::theme::WARNING)
                 .size(crate::theme::FONT_SM),
@@ -474,10 +474,9 @@ fn egui_key_to_rdev(key: egui::Key) -> Option<&'static str> {
     }
 }
 
-/// Show a colored banner describing the current hotkey backend status.
-/// The most important case: rdev on Wayland (falling back) means global
-/// shortcuts won't work in native-Wayland apps — we must tell the user how
-/// to fix it.
+/// Status banner for the active hotkey backend. The "needs fixing" case
+/// is `EvdevUnavailable` — the daemon is up, but the user isn't in the
+/// `input` group so the in-process listener stayed off and only IPC works.
 fn render_backend_warning(ui: &mut egui::Ui, state: &SettingsState) {
     use crate::hotkey::Backend;
     let backend = state.backend_info.backend.lock().clone();
@@ -498,34 +497,34 @@ fn render_backend_warning(ui: &mut egui::Ui, state: &SettingsState) {
                 ),
             );
         }
-        Backend::RdevX11 => {
-            // No banner — everything works.
-        }
-        Backend::EvdevWayland { devices } => {
+        Backend::Evdev { devices } => {
             banner(
                 ui,
                 crate::theme::BG_CARD,
                 Icon::Check,
                 crate::theme::SUCCESS,
                 &format!(
-                    "Wayland + evdev 后端已启用，监听 {} 个键盘设备。快捷键在任何窗口都有效。",
+                    "evdev 后端已启用，监听 {} 个键盘设备。快捷键在 X11 / Wayland 任何窗口都有效。",
                     devices
                 ),
                 None,
             );
         }
-        Backend::RdevWaylandFallback { evdev_error } => {
+        Backend::Rdev => {
+            // macOS / Windows native key-tap; no banner needed.
+        }
+        Backend::EvdevUnavailable { reason } => {
             banner(
                 ui,
                 egui::Color32::from_rgb(0x5A, 0x2D, 0x14),
                 Icon::Warning,
                 crate::theme::WARNING,
-                "Wayland 会话 + 只有 rdev 后端，快捷键仅在 X11 / XWayland 窗口有效，原生 Wayland 应用不会触发。",
+                "内置键盘监听不可用，长按 / 释放热键事件不会触发。当前只能通过 IPC 命令（xsay toggle）使用。",
                 Some(&format!(
-                    "修复方法一：sudo usermod -aG input $USER，注销重登后 xsay 自动切换到 evdev。\n\
-                     修复方法二：改用 X11 会话（登录界面选择 GNOME on Xorg）。\n\
+                    "修复：sudo usermod -aG input $USER  (然后注销重登或 newgrp input)。\n\
+                     备选：保持现状，在 GNOME 自定义快捷键里把组合键绑到 /usr/bin/xsay toggle。\n\
                      evdev 报错：{}",
-                    evdev_error
+                    reason
                 )),
             );
         }

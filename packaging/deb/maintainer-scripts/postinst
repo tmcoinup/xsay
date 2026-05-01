@@ -15,4 +15,33 @@ if [ -e /dev/uinput ] && getent group input >/dev/null 2>&1; then
     chmod 0660 /dev/uinput >/dev/null 2>&1 || true
 fi
 
+# Hotkey listening (evdev on /dev/input/event*) and uinput auto-paste both
+# require the invoking user to be in the `input` group. Without it the
+# daemon falls back to IPC-only mode — no hold-to-talk, no auto-paste.
+# Try the usual "user that ran sudo" env variables; no-op if already a
+# member or if we can't resolve a real account.
+add_to_input_group() {
+    user="$1"
+    [ -z "$user" ] && return 0
+    [ "$user" = "root" ] && return 0
+    if ! id "$user" >/dev/null 2>&1; then
+        return 0
+    fi
+    if id -nG "$user" 2>/dev/null | tr ' ' '\n' | grep -qx input; then
+        return 0
+    fi
+    if usermod -aG input "$user" >/dev/null 2>&1; then
+        echo "xsay: added $user to the 'input' group. Log out and back in" >&2
+        echo "      (or run \`newgrp input\`) for hotkey + auto-paste to work." >&2
+    fi
+}
+
+if getent group input >/dev/null 2>&1; then
+    target_user="${SUDO_USER:-}"
+    if [ -z "$target_user" ] && [ -n "${PKEXEC_UID:-}" ]; then
+        target_user="$(id -nu "$PKEXEC_UID" 2>/dev/null || true)"
+    fi
+    add_to_input_group "$target_user"
+fi
+
 exit 0

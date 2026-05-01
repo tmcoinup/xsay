@@ -13,12 +13,6 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
-pub fn is_wayland_session() -> bool {
-    std::env::var("WAYLAND_DISPLAY").is_ok()
-        && std::env::var("XDG_SESSION_TYPE")
-            .map(|s| s == "wayland")
-            .unwrap_or(false)
-}
 
 /// Spawn one listener thread per accessible keyboard device.
 /// Returns the number of devices on success, or an error if none are readable.

@@ -1,6 +1,6 @@
 [package]
 name = "xsay"
-version = "0.1.23"
+version = "0.1.24"
 edition = "2024"
 description = "Chinese-first offline AI voice input tool with SenseVoice/Paraformer"
 license = "MIT"
@@ -60,7 +60,6 @@ assets = [
 [dependencies]
 cpal = "0.15"
 whisper-rs = "0.14"
-rdev = "0.5"
 # Force the OpenGL (glow) backend instead of eframe 0.34's new wgpu default.
 # wgpu's Vulkan path on GNOME mutter does not advertise an alpha-supporting
 # CompositeAlphaMode for our transparent always-on-top overlay surface — the
@@ -91,6 +90,13 @@ crossbeam-channel = "0.5"
 ureq = { version = "2", features = ["native-tls"] }
 tray-icon = "0.14"
 libc = "0.2"
+
+# rdev is the global keyboard listener on macOS and Windows. On Linux its
+# implementation routes through X11's XRecord extension, which deadlocks
+# GNOME mutter when xsay also has its own X11 windows in the same process —
+# Linux uses evdev (below) instead and `rdev` is not compiled in at all.
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+rdev = "0.5"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 evdev = "0.13"

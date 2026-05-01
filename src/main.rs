@@ -8,6 +8,8 @@ mod history;
 mod hotkey;
 #[cfg(target_os = "linux")]
 mod hotkey_evdev;
+#[cfg(not(target_os = "linux"))]
+mod hotkey_rdev;
 mod inject;
 #[cfg(unix)]
 mod ipc;
@@ -457,59 +459,73 @@ fn spawn_hotkey_backend(
         return "system shortcut IPC";
     }
 
-    #[cfg(target_os = "linux")]
-    let mut evdev_error: Option<String> = None;
+    spawn_internal_listener(
+        hotkey_tx,
+        shared_hotkey,
+        capture_active,
+        capture_slot,
+        backend_info,
+    )
+}
 
-    #[cfg(target_os = "linux")]
-    {
-        if hotkey_evdev::is_wayland_session() {
-            match hotkey_evdev::spawn_hotkey_threads(
-                hotkey_tx.clone(),
-                Arc::clone(&shared_hotkey),
-                Arc::clone(&capture_active),
-                Arc::clone(&capture_slot),
-            ) {
-                Ok(n) => {
-                    log::info!(
-                        "Wayland detected. Using evdev for global hotkeys ({} keyboard(s))",
-                        n
-                    );
-                    *backend_info.backend.lock() =
-                        Some(hotkey::Backend::EvdevWayland { devices: n });
-                    return "evdev (Wayland)";
-                }
-                Err(e) => {
-                    log::warn!("evdev unavailable on Wayland: {}", e);
-                    eprintln!("⚠ Wayland 下 evdev 不可用：{}", e);
-                    eprintln!(
-                        "   执行以下命令后重新登录（或重启）以生效：sudo usermod -aG input $USER"
-                    );
-                    eprintln!("   暂时回退到 rdev (仅 X11/XWayland 应用可用)");
-                    evdev_error = Some(e);
-                }
-            }
+#[cfg(target_os = "linux")]
+fn spawn_internal_listener(
+    hotkey_tx: crossbeam_channel::Sender<AppEvent>,
+    shared_hotkey: Arc<Mutex<config::HotkeyConfig>>,
+    capture_active: Arc<std::sync::atomic::AtomicBool>,
+    capture_slot: Arc<hotkey::CaptureSlot>,
+    backend_info: Arc<hotkey::BackendInfo>,
+) -> &'static str {
+    // Linux uses evdev exclusively. The previous rdev path opened an X11
+    // XRecord context which deadlocked GNOME mutter when combined with
+    // our other in-process X11 clients (eframe winit + tray-icon GTK).
+    // If evdev permission is missing (user not in `input` group) we
+    // refuse to fall back to rdev — instead we stay in IPC-only mode
+    // and surface the diagnostic so the user can fix permissions and
+    // re-launch. Worse to silently freeze the desktop than to require
+    // a one-time setup step.
+    match hotkey_evdev::spawn_hotkey_threads(
+        hotkey_tx,
+        shared_hotkey,
+        capture_active,
+        capture_slot,
+    ) {
+        Ok(n) => {
+            log::info!("evdev hotkey listener active ({} keyboard(s))", n);
+            *backend_info.backend.lock() = Some(hotkey::Backend::Evdev { devices: n });
+            "evdev"
+        }
+        Err(e) => {
+            log::warn!("evdev unavailable: {}", e);
+            eprintln!("⚠ 内置热键监听不可用：{}", e);
+            eprintln!(
+                "   修复：sudo usermod -aG input $USER && newgrp input  (或注销重登)"
+            );
+            eprintln!(
+                "   暂时回退到 IPC 模式，可在 GNOME 自定义快捷键里绑定 `xsay toggle` 使用。"
+            );
+            *backend_info.backend.lock() =
+                Some(hotkey::Backend::EvdevUnavailable { reason: e });
+            "system shortcut IPC (evdev unavailable)"
         }
     }
+}
 
+#[cfg(not(target_os = "linux"))]
+fn spawn_internal_listener(
+    hotkey_tx: crossbeam_channel::Sender<AppEvent>,
+    shared_hotkey: Arc<Mutex<config::HotkeyConfig>>,
+    capture_active: Arc<std::sync::atomic::AtomicBool>,
+    capture_slot: Arc<hotkey::CaptureSlot>,
+    backend_info: Arc<hotkey::BackendInfo>,
+) -> &'static str {
+    // macOS / Windows use rdev's native key-tap APIs, which don't have
+    // the Linux XRecord problem.
     std::thread::spawn(move || {
-        hotkey::run_hotkey_thread(hotkey_tx, shared_hotkey, capture_active, capture_slot)
+        hotkey_rdev::run_hotkey_thread(hotkey_tx, shared_hotkey, capture_active, capture_slot)
     });
-
-    #[cfg(target_os = "linux")]
-    {
-        *backend_info.backend.lock() = if hotkey_evdev::is_wayland_session() {
-            Some(hotkey::Backend::RdevWaylandFallback {
-                evdev_error: evdev_error.unwrap_or_default(),
-            })
-        } else {
-            Some(hotkey::Backend::RdevX11)
-        };
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        *backend_info.backend.lock() = Some(hotkey::Backend::RdevX11);
-    }
-    "rdev (X11)"
+    *backend_info.backend.lock() = Some(hotkey::Backend::Rdev);
+    "rdev"
 }
 
 fn print_help() {
