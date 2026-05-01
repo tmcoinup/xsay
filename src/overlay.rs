@@ -116,11 +116,11 @@ fn decode_idle_badge() -> egui::ColorImage {
 /// `window_pos_for_anchor` recenter each state's window on it.
 fn compute_icon_anchor(monitor: egui::Vec2, corner: &str) -> egui::Pos2 {
     let side_margin = 20.0;
-    // Lift the bottom-anchored disk above the GNOME shell / taskbar plus the
-    // user's natural focus zone so a Recording pill doesn't crowd the bottom
-    // edge. 114 is roughly the midpoint between the original 88 (too close
-    // to the dock) and the 140 we tried in 0.1.26 (too far up).
-    let bottom_margin = 114.0;
+    // Bottom margin from the screen edge to where the OVERLAY_SIZE-bounded
+    // viewport bottom sits. The disk centre ends up `OVERLAY_SIZE.y * 0.5`
+    // higher, which on the standard GNOME layout lands the badge just above
+    // the dock without crowding it.
+    let bottom_margin = 88.0;
     let top_margin = 20.0;
     let half = OVERLAY_SIZE.x * 0.5;
     match corner {
@@ -280,13 +280,12 @@ impl XsayOverlay {
                     ),
                     egui::Color32::WHITE,
                 );
-                // Click target is the disk region only (upper-centre of the
-                // PNG) — clicks on the bottom "xsay" label or the surrounding
-                // transparent margin wouldn't feel like buttons. Disk centre
-                // is at roughly 50 / 120 from the top; radius scaled from
-                // the original 480-px artwork.
+                // PNG is now disk-only (no label below), so the click region
+                // is centred on the window. Surrounding transparent padding
+                // keeps swallowed clicks to a minimum without overlapping
+                // with anything the user might be trying to click behind us.
                 let disk_rect = egui::Rect::from_center_size(
-                    egui::pos2(rect.center().x, rect.min.y + rect.height() * 0.40),
+                    rect.center(),
                     egui::vec2(IDLE_DISK_RADIUS * 2.0, IDLE_DISK_RADIUS * 2.0),
                 );
                 let response = ui.interact(
