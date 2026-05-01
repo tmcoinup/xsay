@@ -70,11 +70,68 @@ pub fn spawn_in_background() {
     });
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "windows")]
 pub fn spawn_in_background() {
-    // macOS / Windows tray would use a different stack (NSStatusItem /
-    // Shell_NotifyIcon). Not wired up; the same overlay click + IPC
-    // commands cover the daily flow on those platforms too.
+    use tray_icon::{
+        TrayIcon, TrayIconBuilder,
+        menu::{Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem},
+    };
+
+    const ID_SHOW: &str = "xsay.show_settings";
+    const ID_QUIT: &str = "xsay.quit";
+
+    fn make_icon() -> tray_icon::Icon {
+        const SIZE: u32 = 32;
+        const RGBA: &[u8] = include_bytes!("../assets/tray-32.rgba");
+        debug_assert_eq!(RGBA.len(), (SIZE * SIZE * 4) as usize);
+        tray_icon::Icon::from_rgba(RGBA.to_vec(), SIZE, SIZE)
+            .expect("failed to build tray icon")
+    }
+
+    fn build() -> Result<TrayIcon, String> {
+        let menu = Menu::new();
+        let show = MenuItem::with_id(MenuId::new(ID_SHOW), "Open Settings", true, None);
+        let quit = MenuItem::with_id(MenuId::new(ID_QUIT), "Quit xsay", true, None);
+        menu.append(&show).map_err(|e| e.to_string())?;
+        menu.append(&PredefinedMenuItem::separator())
+            .map_err(|e| e.to_string())?;
+        menu.append(&quit).map_err(|e| e.to_string())?;
+        TrayIconBuilder::new()
+            .with_tooltip("xsay")
+            .with_menu(Box::new(menu))
+            .with_icon(make_icon())
+            .build()
+            .map_err(|e| e.to_string())
+    }
+
+    // Build on the calling thread (which is the main thread on the way
+    // into eframe::run_native — winit's later message pump dispatches
+    // tray-icon's WM_USER messages for us). `tray_icon::TrayIcon` is
+    // not Sync (it owns `Rc<RefCell<…>>`), so we can't park it in a
+    // `static OnceLock`; `std::mem::forget` keeps the underlying HWND
+    // alive without the destructor ever running.
+    match build() {
+        Ok(tray) => {
+            log::info!("Tray icon (Shell_NotifyIcon) ready");
+            std::mem::forget(tray);
+            std::thread::spawn(|| {
+                while let Ok(ev) = MenuEvent::receiver().recv() {
+                    match ev.id.as_ref() {
+                        ID_SHOW => request_show_settings(),
+                        ID_QUIT => request_quit(),
+                        _ => {}
+                    }
+                }
+            });
+        }
+        Err(e) => log::warn!("Tray unavailable: {}", e),
+    }
+}
+
+#[cfg(all(not(target_os = "linux"), not(target_os = "windows")))]
+pub fn spawn_in_background() {
+    // macOS tray (NSStatusItem) isn't wired up yet. Daily flow still
+    // works through the overlay click + IPC commands.
 }
 
 #[cfg(target_os = "linux")]

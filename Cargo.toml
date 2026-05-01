@@ -93,6 +93,13 @@ libc = "0.2"
 [target.'cfg(not(target_os = "linux"))'.dependencies]
 rdev = "0.5"
 
+# Windows tray icon: Shell_NotifyIcon via the `tray-icon` crate. Linux
+# avoids this crate because it pulls in GTK there; on Windows the
+# backend is the Win32 shell API directly, which has none of the
+# thread / event-loop issues that bit us on Linux.
+[target.'cfg(target_os = "windows")'.dependencies]
+tray-icon = "0.14"
+
 [target.'cfg(target_os = "linux")'.dependencies]
 evdev = "0.13"
 # Pure-Rust StatusNotifierItem (KDE/AppIndicator) D-Bus client. Replaces
